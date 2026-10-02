@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI Auto Trader</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div><span class="eyebrow">TOSS SECURITIES</span><h1>AI Auto Trader</h1></div>
+      <span id="status" class="badge stopped">STOPPED</span>
+    </header>
+
+    <section class="hero card">
+      <div><p class="muted">자동매매 상태</p><strong id="state">중지됨</strong></div>
+      <button id="toggle">자동매매 시작</button>
+    </section>
+
+    <section class="grid">
+      <article class="card"><span>오늘 손익</span><strong id="pnl">₩0</strong></article>
+      <article class="card"><span>보유 종목</span><strong id="holdings">-</strong></article>
+      <article class="card"><span>서버</span><strong id="server">확인 중</strong></article>
+    </section>
+
+    <section class="card">
+      <h2>시스템 안전 상태</h2>
+      <ul>
+        <li>기본 실행 모드: <b>PAPER</b></li>
+        <li>실전 주문: 기본 차단</li>
+        <li>API Secret: 브라우저에 저장하지 않음</li>
+        <li>주문 한도 / 일일 손실 한도 적용</li>
+      </ul>
+    </section>
+
+    <footer>AI Auto Trader · experimental</footer>
+  </main>
+<script src="./app.js"></script>
+</body>
+</html>
