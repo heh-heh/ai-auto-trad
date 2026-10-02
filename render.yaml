@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: ai-auto-trader-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: TOSS_CLIENT_ID
+        sync: false
+      - key: TOSS_CLIENT_SECRET
+        sync: false
+      - key: TOSS_ACCOUNT_SEQ
+        sync: false
+      - key: TRADING_MODE
+        value: paper
+      - key: MAX_ORDER_KRW
+        value: "100000"
+      - key: MAX_DAILY_LOSS_KRW
+        value: "50000"
+      - key: ALLOWED_ORIGINS
+        value: "https://heh-heh.github.io"
