@@ -1,86 +1,26 @@
-const API_BASE = localStorage.getItem("TRADING_API_BASE") || "https://ai-auto-trad.onrender.com";
-const SYMBOL = "005930";
-let enabled = false;
-let market = null;
-const $ = id => document.getElementById(id);
-const won = n => "₩" + Math.round(Number(n || 0)).toLocaleString("ko-KR");
-
-function renderHealth(d){enabled=d.trading_enabled;$("state").textContent=enabled?"실행 중":"중지됨";$("status").textContent=enabled?"RUNNING":"STOPPED";$("status").className="badge "+(enabled?"running":"stopped");$("toggle").textContent=enabled?"자동매매 중지":"자동매매 시작"}
-async function health(){try{const r=await fetch(API_BASE+"/health");if(!r.ok)throw 0;renderHealth(await r.json());$("server").textContent="ONLINE"}catch{$("server").textContent="OFFLINE"}}
-async function portfolio(){try{const d=await (await fetch(API_BASE+"/api/paper/portfolio")).json();$("equity").textContent=won(d.equity);$("cash").textContent=won(d.cash);$("pnl").textContent=(d.total_pnl>=0?"+":"")+won(d.total_pnl);renderTrades(d.trades||[])}catch{}}
-function renderTrades(ts){$("trades").innerHTML=ts.length?ts.slice(0,12).map(t=>'<div class="trade"><span class="'+(t.side==="BUY"?"buytext":"selltext")+'">'+t.side+" "+t.symbol+" × "+t.quantity+'</span><span>'+won(t.price)+'</span></div>').join(""):"거래 없음"}
-async function loadMarket(){try{market=await (await fetch(API_BASE+"/api/market/"+SYMBOL)).json();$("signal").textContent=market.signal.action;drawChart(market.candles,market.indicators);$("sma5").textContent=won(market.indicators?.sma5);$("sma20").textContent=won(market.indicators?.sma20);$("rsi14").textContent=market.indicators?.rsi14==null?"-":market.indicators.rsi14.toFixed(1);$("source").textContent=market.source; if(market.live_error) $("source").title=market.live_error.message || "Toss live data unavailable"; else $("source").title=""}catch{}}
-function drawChart(cs, indicators){
-  const c=$("chart"),ctx=c.getContext("2d"),dpr=devicePixelRatio||1,w=c.clientWidth,h=280;
-  c.width=w*dpr;c.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);
-  const pad=28, highs=cs.map(x=>+x.highPrice), lows=cs.map(x=>+x.lowPrice);
-  const min=Math.min(...lows),max=Math.max(...highs),range=Math.max(1,max-min);
-  const xAt=i=>pad+i*(w-pad*2)/Math.max(1,cs.length-1);
-  const yAt=v=>h-pad-(v-min)/range*(h-pad*2);
-  ctx.clearRect(0,0,w,h);
-  ctx.strokeStyle="#303846";ctx.lineWidth=1;
-  for(let g=0;g<4;g++){const y=pad+g*(h-pad*2)/3;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke()}
-  const step=Math.max(3,(w-pad*2)/cs.length*0.62);
-  cs.forEach((x,i)=>{
-    const px=xAt(i),o=+x.openPrice,cl=+x.closePrice,hi=+x.highPrice,lo=+x.lowPrice;
-    ctx.strokeStyle=cl>=o?"#75e3a1":"#ff9a9a";ctx.fillStyle=ctx.strokeStyle;ctx.lineWidth=1;
-    ctx.beginPath();ctx.moveTo(px,yAt(lo));ctx.lineTo(px,yAt(hi));ctx.stroke();
-    const top=yAt(Math.max(o,cl)),bottom=yAt(Math.min(o,cl));
-    ctx.fillRect(px-step/2,top,Math.max(1,step),Math.max(1,bottom-top));
-  });
-  const values=key=>cs.map(x=>indicators&&x[key]);
-  [["sma5","#f0c36a"],["sma20","#75a7ff"]].forEach(([key,color])=>{
-    if(!indicators)return;
-    const period=key==="sma5"?5:20;
-    ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();
-    let started=false;
-    cs.forEach((x,i)=>{
-      if(i+1<period)return;
-      const v=cs.slice(i+1-period,i+1).reduce((a,z)=>a+Number(z.closePrice),0)/period;
-      const px=xAt(i),py=yAt(v);
-      if(!started){ctx.moveTo(px,py);started=true}else ctx.lineTo(px,py);
-    });ctx.stroke();
-  });
-  ctx.fillStyle="#8993a4";ctx.font="11px system-ui";ctx.fillText(won(max),8,16);ctx.fillText(won(min),8,h-6);
-}
-async function order(side){try{const r=await fetch(API_BASE+"/api/paper/order",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({symbol:SYMBOL,side,quantity:Number($("orderQty").value),price:Number($("orderPrice").value)})});const d=await r.json();if(!r.ok)throw Error(d.detail||"주문 실패");await portfolio()}catch(e){alert(e.message)}}
-async function testToss(){
-  try{
-    const r=await fetch(API_BASE+"/api/toss/status");
-    const d=await r.json();
-    $("tossState").textContent=d.connected?"CONNECTED":"BLOCKED";
-    $("liveMode").textContent=(d.mode||"paper").toUpperCase();
-    $("liveReady").textContent=d.live_api_ready?"API READY":"BLOCKED";
-    const diag=await (await fetch(API_BASE+"/api/toss/diagnostics")).json();
-    $("tossOutbound").textContent=diag.outbound_ip||"-";
-    $("tossAccounts").textContent=diag.accounts?"OK":"FAIL";
-    $("tossHoldings").textContent=diag.holdings?"OK":"FAIL";
-  }catch{$("tossState").textContent="OFFLINE"}
-}
-async function runBacktest(){try{const d=await (await fetch(API_BASE+"/api/paper/backtest/"+SYMBOL)).json();$("btInitial").textContent=won(d.initial_cash);$("btFinal").textContent=won(d.final_equity);$("btPnl").textContent=(d.pnl>=0?"+":"")+won(d.pnl);$("btReturn").textContent=d.return_pct.toFixed(2)+"%";$("btDrawdown").textContent=d.max_drawdown_pct.toFixed(2)+"%";$("btWinRate").textContent=d.win_rate.toFixed(1)+"%";$("btTrades").textContent=d.trades.length+"건의 가상 체결 발생"}catch{$("btTrades").textContent="백테스트 실패"}}
-$("tossTest").onclick=testToss;
-$("toggle").onclick=async()=>{try{renderHealth(await (await fetch(API_BASE+"/api/trading/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!enabled})})).json())}catch{alert("서버 연결 실패")}};
-$("buy").onclick=()=>order("BUY");$("sell").onclick=()=>order("SELL");$("backtest").onclick=runBacktest;
-$("reset").onclick=async()=>{if(confirm("가상계좌를 초기화할까요?")){await fetch(API_BASE+"/api/paper/reset",{method:"POST"});await portfolio()}};
-addEventListener("resize",()=>market&&drawChart(market.candles,market.indicators));health();portfolio();loadMarket();setInterval(health,10000);setInterval(portfolio,10000);setInterval(loadMarket,30000);
-
-let liveSocket;
-function connectLiveStream(){
-  try{
-    const base=API_BASE.replace(/^http/,"ws");
-    liveSocket=new WebSocket(base+"/ws/market/"+SYMBOL);
-    liveSocket.onmessage=e=>{
-      try{
-        const m=JSON.parse(e.data);
-        if(m.type==="message" && m.data){
-          const d=m.data;
-          const p=d.lastPrice ?? d.tradePrice ?? d.price;
-          if(p!=null && $("livePrice")) $("livePrice").textContent=won(p);
-        }
-      }catch{}
-    };
-    liveSocket.onclose=()=>setTimeout(connectLiveStream,15000);
-    liveSocket.onerror=()=>liveSocket.close();
-  }catch{}
-}
-connectLiveStream();
+let API_BASE=localStorage.getItem("TRADING_API_BASE")||"https://ai-auto-trad.onrender.com";
+let CONTROL_TOKEN=localStorage.getItem("TRADING_CONTROL_TOKEN")||"";
+let enabled=false,autoEnabled=false,market=null,interval="1m";
+const $=id=>document.getElementById(id),won=n=>"₩"+Math.round(Number(n||0)).toLocaleString("ko-KR");
+function headers(){return CONTROL_TOKEN?{"Content-Type":"application/json","X-Control-Token":CONTROL_TOKEN}:{"Content-Type":"application/json"}}
+async function api(path,opt={}){return fetch(API_BASE+path,{...opt,headers:{...(opt.headers||{}),...(opt.method?headers():{})}})}
+function renderHealth(d){enabled=!!d.trading_enabled;$("state").textContent=enabled?"엔진 실행 중":"엔진 중지";$("status").textContent=enabled?"RUNNING":"STOPPED";$("status").className="badge "+(enabled?"running":"stopped");$("toggle").textContent=enabled?"엔진 중지":"엔진 시작";autoEnabled=!!d.auto_enabled;$("autoToggle").textContent=autoEnabled?"자동매매 ON":"자동매매 OFF"}
+async function health(){try{const d=await(await api("/health")).json();renderHealth(d);$("serverText").textContent=API_BASE+" · ONLINE";return d}catch{$("status").textContent="OFFLINE";$("status").className="badge stopped";$("serverText").textContent="API 서버에 연결할 수 없습니다"}}
+async function portfolio(){try{const d=await(await api("/api/paper/portfolio")).json();$("equity").textContent=won(d.equity);$("cash").textContent=won(d.cash);$("pnl").textContent=(d.total_pnl>=0?"+":"")+won(d.total_pnl);$("holdings").innerHTML=d.holdings?.length?d.holdings.map(x=>`<div class="trade"><span>${x.symbol} × ${x.quantity}</span><span>${won(x.market_value)} / ${x.unrealized_pnl>=0?"+":""}${won(x.unrealized_pnl)}</span></div>`).join(""):"보유 종목 없음";renderTrades(d.trades||[])}catch{}}
+function renderTrades(ts){$("trades").innerHTML=ts.length?ts.slice(0,15).map(t=>`<div class="trade"><span class="${t.side==="BUY"?"buytext":"selltext"}">${t.side} ${t.symbol} × ${t.quantity}</span><span>${won(t.price)}</span></div>`).join(""):"거래 없음"}
+function drawChart(cs){const c=$("chart"),ctx=c.getContext("2d"),dpr=devicePixelRatio||1,w=c.clientWidth,h=300;c.width=w*dpr;c.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);if(!cs.length)return;const pad=30,hi=cs.map(x=>+x.highPrice),lo=cs.map(x=>+x.lowPrice),min=Math.min(...lo),max=Math.max(...hi),range=Math.max(1,max-min),x=i=>pad+i*(w-pad*2)/Math.max(1,cs.length-1),y=v=>h-pad-(v-min)/range*(h-pad*2);ctx.clearRect(0,0,w,h);ctx.strokeStyle="#2a3340";for(let g=0;g<4;g++){let yy=pad+g*(h-pad*2)/3;ctx.beginPath();ctx.moveTo(pad,yy);ctx.lineTo(w-pad,yy);ctx.stroke()}let step=Math.max(3,(w-pad*2)/cs.length*.62);cs.forEach((z,i)=>{let px=x(i),o=+z.openPrice,cl=+z.closePrice;ctx.strokeStyle=cl>=o?"#75e3a1":"#ff9a9a";ctx.beginPath();ctx.moveTo(px,y(+z.lowPrice));ctx.lineTo(px,y(+z.highPrice));ctx.stroke();ctx.fillStyle=ctx.strokeStyle;let top=y(Math.max(o,cl)),bot=y(Math.min(o,cl));ctx.fillRect(px-step/2,top,Math.max(1,step),Math.max(1,bot-top))});[["sma5","#f0c36a",5],["sma20","#75a7ff",20]].forEach(([k,col,p])=>{ctx.strokeStyle=col;ctx.lineWidth=1.5;ctx.beginPath();let started=false;cs.forEach((z,i)=>{if(i+1<p)return;let v=cs.slice(i+1-p,i+1).reduce((a,q)=>a+Number(q.closePrice),0)/p;if(!started){ctx.moveTo(x(i),y(v));started=true}else ctx.lineTo(x(i),y(v))});ctx.stroke()});ctx.fillStyle="#8993a4";ctx.font="11px system-ui";ctx.fillText(won(max),8,16);ctx.fillText(won(min),8,h-6)}
+async function loadMarket(){const sym=$("symbol").value.trim().toUpperCase();try{market=await(await api(`/api/market/${encodeURIComponent(sym)}?interval=${interval}`)).json();$("signal").textContent=market.signal?.action||"-";$("source").textContent=market.source||"-";$("livePrice").textContent=market.candles?.length?won(market.candles.at(-1).closePrice):"-";const i=market.indicators||{};$("sma5").textContent=won(i.sma5);$("sma20").textContent=won(i.sma20);$("rsi14").textContent=i.rsi14==null?"-":Number(i.rsi14).toFixed(1);drawChart(market.candles||[]);if(market.candles?.length)$("orderPrice").value=Math.round(Number(market.candles.at(-1).closePrice));await orderbook(sym)}catch{}}
+async function orderbook(sym){try{const d=await(await api(`/api/orderbook/${encodeURIComponent(sym)}`)).json(),v=d.result||d,asks=v.asks||v.sell||v.sellOrders||[],bids=v.bids||v.buy||v.buyOrders||[],rows=[];for(let i=0;i<Math.max(asks.length,bids.length,5)&&i<10;i++){const a=asks[i],b=bids[i];rows.push(`<div class="bookrow"><span class="ask">${a?(a.price??a.askPrice??"-"):""}</span><span>${a?(a.quantity??a.volume??a.askQuantity??"-"):""}</span><span class="bid">${b?(b.price??b.bidPrice??"-"):""}</span></div>`)}$("orderbook").innerHTML='<div class="bookrow"><b>매도</b><b>잔량</b><b>매수</b></div>'+rows.join("")}catch{$("orderbook").textContent="호가 조회 실패"}}
+async function order(side){try{const r=await api("/api/paper/order",{method:"POST",body:JSON.stringify({symbol:$("symbol").value.trim().toUpperCase(),side,quantity:Number($("orderQty").value),price:Number($("orderPrice").value)})}),d=await r.json();if(!r.ok)throw Error(d.error||"주문 실패");await portfolio();alert(`${side} 체결 완료`)}catch(e){alert(e.message)}}
+async function configureAuto(value){const r=await api("/api/auto/config",{method:"POST",body:JSON.stringify({enabled:value,symbol:$("autoSymbol").value.trim().toUpperCase(),interval,order_krw:Number($("autoBudget").value)})}),d=await r.json();if(!r.ok)throw Error(d.error||"설정 실패");autoEnabled=!!d.auto.auto_enabled;$("autoToggle").textContent=autoEnabled?"자동매매 ON":"자동매매 OFF"}
+$("toggle").onclick=async()=>{try{const r=await api("/api/trading/toggle",{method:"POST",body:JSON.stringify({enabled:!enabled})}),d=await r.json();if(!r.ok)throw Error(d.error);renderHealth(d)}catch(e){alert(e.message)}};
+$("autoToggle").onclick=async()=>{if(!enabled){alert("먼저 엔진을 시작하세요.");return}try{await configureAuto(!autoEnabled)}catch(e){alert(e.message)}};
+$("saveAuto").onclick=async()=>{try{await configureAuto(autoEnabled);alert("자동매매 설정을 저장했습니다.")}catch(e){alert(e.message)}};
+document.querySelectorAll(".interval").forEach(b=>b.onclick=()=>{interval=b.dataset.interval;document.querySelectorAll(".interval").forEach(x=>x.classList.remove("active"));b.classList.add("active")});
+$("buy").onclick=()=>order("BUY");$("sell").onclick=()=>order("SELL");
+$("reset").onclick=async()=>{if(confirm("가상계좌를 초기화할까요?")){await api("/api/paper/reset",{method:"POST"});await portfolio()}};
+$("backtest").onclick=async()=>{try{const d=await(await api(`/api/market/${encodeURIComponent($("symbol").value.trim().toUpperCase())}?interval=1d`)).json();const cs=d.candles||[];let cash=1000000,shares=0,trades=0;for(let i=20;i<cs.length;i++){const w=cs.slice(0,i+1),ind={sma5:w.slice(-5).reduce((a,x)=>a+Number(x.closePrice),0)/5,sma20:w.slice(-20).reduce((a,x)=>a+Number(x.closePrice),0)/20},p=Number(cs[i].closePrice);if(ind.sma5>ind.sma20*1.002&&shares===0){shares=Math.floor(cash/p);cash-=shares*p;trades++}else if(ind.sma5<ind.sma20*.998&&shares){cash+=shares*p;shares=0;trades++}}const final=cash+shares*Number(cs.at(-1)?.closePrice||0);$("btInitial").textContent=won(1000000);$("btFinal").textContent=won(final);$("btPnl").textContent=(final>=1000000?"+":"")+won(final-1000000);$("btReturn").textContent=((final/1000000-1)*100).toFixed(2)+"%";$("btTrades").textContent=`단순 SMA 백테스트 · ${trades}건`}catch{$("btTrades").textContent="백테스트 실패"}};
+$("saveConnection").onclick=async()=>{API_BASE=$("apiBase").value.trim().replace(/\/$/,"");CONTROL_TOKEN=$("controlToken").value.trim();localStorage.setItem("TRADING_API_BASE",API_BASE);localStorage.setItem("TRADING_CONTROL_TOKEN",CONTROL_TOKEN);await health();await portfolio();await loadMarket()};
+$("test").onclick=async()=>{await health();$("connection").textContent=`API: ${API_BASE}\nToken: ${CONTROL_TOKEN?"설정됨":"미설정"}`};
+$("apiBase").value=API_BASE;$("controlToken").value=CONTROL_TOKEN;
+health();portfolio();loadMarket();setInterval(health,10000);setInterval(portfolio,10000);setInterval(loadMarket,15000);addEventListener("resize",()=>market&&drawChart(market.candles));
