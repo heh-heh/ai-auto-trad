@@ -316,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/paper/portfolio":return self.send_json(portfolio())
             if path=="/api/auto/status":return self.send_json({k:STATE[k] for k in ("auto_enabled","auto_symbol","auto_interval","auto_order_krw","last_auto_candle","last_auto_action","last_auto_reason","last_error")})
             if path=="/api/live/status":
-                return self.send_json({"mode":MODE,"credentials_configured":bool(CLIENT_ID and CLIENT_SECRET),"account_configured":bool(ACCOUNT_SEQ),"live_trading_enabled":LIVE_TRADING_ENABLED,"live_armed":bool(STATE.get("live_armed",False)),"live_auto_enabled":bool(STATE.get("live_auto_enabled",False)),"live_order_ready":MODE=="live" and LIVE_TRADING_ENABLED and bool(STATE.get("live_armed",False))})
+                return self.send_json({"mode":MODE,"credentials_configured":bool(CLIENT_ID and CLIENT_SECRET),"account_configured":bool(ACCOUNT_SEQ),"live_trading_enabled":LIVE_TRADING_ENABLED,"live_armed":bool(STATE.get("live_armed",False)),"live_auto_enabled":bool(STATE.get("live_auto_enabled",False)),"live_halted":bool(STATE.get("live_halted",False)),"daily_loss_krw":float(STATE.get("live_daily_loss",0) or 0),"daily_loss_limit_krw":MAX_DAILY_LOSS,"last_order_id":STATE.get("live_last_order_id",""),"live_order_ready":MODE=="live" and LIVE_TRADING_ENABLED and bool(STATE.get("live_armed",False)) and not bool(STATE.get("live_halted",False))})
             if path=="/api/live/account":
                 if not self.guard():return
                 if MODE!="live":return self.send_json({"error":"live mode is disabled"},403)
@@ -324,9 +324,17 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/live/orders":
                 if not self.guard():return
                 return self.send_json(toss("GET","/api/v1/orders",{"status":q.get("status",["OPEN"])[0]},account=True))
+            if path.startswith("/api/live/orders/"):
+                if not self.guard():return
+                oid=path.rsplit("/",1)[-1]
+                return self.send_json(toss("GET",f"/api/v1/orders/{oid}",account=True))
             if path=="/api/live/buying-power":
                 if not self.guard():return
                 return self.send_json(toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True))
+            if path=="/api/live/risk":
+                if not self.guard():return
+                snap=live_daily_risk_check()
+                return self.send_json({"ok":True,"equity":snap["equity"],"daily_loss_krw":STATE.get("live_daily_loss",0),"daily_loss_limit_krw":MAX_DAILY_LOSS,"halted":STATE.get("live_halted",False)})
             if path.startswith("/api/live/sellable/"):
                 if not self.guard():return
                 if MODE!="live":return self.send_json({"error":"live mode is disabled"},403)
@@ -353,13 +361,15 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/live/arm":
                 if MODE!="live" or not LIVE_TRADING_ENABLED:return self.send_json({"error":"live trading is not enabled in local config"},403)
                 if not LIVE_ARM_PHRASE or not secrets.compare_digest(str(b.get("phrase","")),LIVE_ARM_PHRASE):return self.send_json({"error":"invalid live arm phrase"},403)
+                live_daily_risk_check()
                 with LOCK:STATE["live_armed"]=True;STATE["live_auto_enabled"]=False;save()
-                return self.send_json({"ok":True,"live_armed":True,"live_auto_enabled":False})
+                return self.send_json({"ok":True,"live_armed":True,"live_auto_enabled":False,"daily_loss_krw":STATE.get("live_daily_loss",0)})
             if path=="/api/live/disarm":
                 with LOCK:STATE["live_armed"]=False;STATE["live_auto_enabled"]=False;save()
                 return self.send_json({"ok":True,"live_armed":False,"live_auto_enabled":False})
             if path=="/api/live/auto":
                 if not STATE.get("live_armed",False):return self.send_json({"error":"live engine is not armed"},403)
+                if bool(b.get("enabled",False)): live_daily_risk_check()
                 with LOCK:STATE["live_auto_enabled"]=bool(b.get("enabled",False));save()
                 return self.send_json({"ok":True,"live_auto_enabled":STATE["live_auto_enabled"]})
             if path=="/api/live/order":
