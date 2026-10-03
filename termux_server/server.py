@@ -15,7 +15,7 @@ def load_env(p):
     for line in open(p,encoding="utf-8"):
         line=line.strip()
         if line and not line.startswith("#") and "=" in line:
-            k,v=line.split("=",1); os.environ.setdefault(k.strip(),v.strip().strip('"').strip("'"))
+            k,v=line.split("=",1); os.environ[k.strip()]=v.strip().strip('"').strip("'")
 load_env(ENV)
 CLIENT_ID=os.getenv("TOSS_CLIENT_ID",""); CLIENT_SECRET=os.getenv("TOSS_CLIENT_SECRET",""); ACCOUNT_SEQ=os.getenv("TOSS_ACCOUNT_SEQ","")
 MODE=os.getenv("TRADING_MODE","paper").lower(); MAX_ORDER=float(os.getenv("MAX_ORDER_KRW","100000")); MAX_DAILY_LOSS=float(os.getenv("MAX_DAILY_LOSS_KRW","50000"))
@@ -201,6 +201,7 @@ def live_daily_risk_check():
     return snap
 
 def live_guard():
+    global ACCOUNT_SEQ
     if MODE!="live": raise RuntimeError("TRADING_MODE=live is required")
     if not LIVE_TRADING_ENABLED: raise RuntimeError("LIVE_TRADING_ENABLED=false")
     if STATE.get("live_halted",False): raise RuntimeError("live trading halted by risk control")
@@ -208,7 +209,7 @@ def live_guard():
         d=toss("GET","/api/v1/accounts")
         seq=find_account(d)
         if not seq: raise RuntimeError("No active Toss account found")
-        os.environ["TOSS_ACCOUNT_SEQ"]=seq
+        ACCOUNT_SEQ=seq
     return True
 
 def live_order(symbol,side,quantity,order_type="MARKET",price=None):
@@ -319,6 +320,9 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/trades/"):return self.send_json(toss("GET","/api/v1/trades",{"symbol":path.rsplit("/",1)[-1],"count":50}))
             if path=="/api/paper/portfolio":return self.send_json(portfolio())
             if path=="/api/auto/status":return self.send_json({k:STATE[k] for k in ("auto_enabled","auto_symbol","auto_interval","auto_order_krw","last_auto_candle","last_auto_action","last_auto_reason","last_error")})
+            if path=="/api/live/config":
+                if not self.guard():return
+                return self.send_json({"mode":MODE,"live_trading_enabled":LIVE_TRADING_ENABLED,"arm_phrase_configured":bool(LIVE_ARM_PHRASE),"arm_phrase_length":len(LIVE_ARM_PHRASE),"credentials_configured":bool(CLIENT_ID and CLIENT_SECRET)})
             if path=="/api/live/status":
                 return self.send_json({"mode":MODE,"credentials_configured":bool(CLIENT_ID and CLIENT_SECRET),"account_configured":bool(ACCOUNT_SEQ),"live_trading_enabled":LIVE_TRADING_ENABLED,"live_armed":bool(STATE.get("live_armed",False)),"live_auto_enabled":bool(STATE.get("live_auto_enabled",False)),"live_halted":bool(STATE.get("live_halted",False)),"daily_loss_krw":float(STATE.get("live_daily_loss",0) or 0),"daily_loss_limit_krw":MAX_DAILY_LOSS,"last_order_id":STATE.get("live_last_order_id",""),"live_order_ready":MODE=="live" and LIVE_TRADING_ENABLED and bool(STATE.get("live_armed",False)) and not bool(STATE.get("live_halted",False))})
             if path=="/api/live/account":
@@ -364,7 +368,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok":True,"auto":{k:STATE[k] for k in ("auto_enabled","auto_symbol","auto_interval","auto_order_krw")}})
             if path=="/api/live/arm":
                 if MODE!="live" or not LIVE_TRADING_ENABLED:return self.send_json({"error":"live trading is not enabled in local config"},403)
-                if not LIVE_ARM_PHRASE or not secrets.compare_digest(str(b.get("phrase","")),LIVE_ARM_PHRASE):return self.send_json({"error":"invalid live arm phrase"},403)
+                phrase=str(b.get("phrase","")).strip()
+                if not LIVE_ARM_PHRASE or not secrets.compare_digest(phrase,LIVE_ARM_PHRASE):return self.send_json({"error":"invalid live arm phrase"},403)
                 live_daily_risk_check()
                 with LOCK:STATE["live_armed"]=True;STATE["live_auto_enabled"]=False;save()
                 return self.send_json({"ok":True,"live_armed":True,"live_auto_enabled":False,"daily_loss_krw":STATE.get("live_daily_loss",0)})
