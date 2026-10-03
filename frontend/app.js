@@ -2,7 +2,7 @@ let API_BASE=localStorage.getItem("TRADING_API_BASE")||"";
 let CONTROL_TOKEN=localStorage.getItem("TRADING_CONTROL_TOKEN")||"";
 let engine=false,liveArmed=false,liveAuto=false,interval="1m",market=null;
 const $=id=>document.getElementById(id);
-const won=n=>"₩"+Math.round(Number(n||0)).toLocaleString("ko-KR");
+const won=n=>"₩"+Math.round(Number(n||0)).toLocaleString("ko-KR"); const usd=n=>"$"+Number(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
 function headers(){return {"Content-Type":"application/json","X-Control-Token":CONTROL_TOKEN}}
 async function api(path,opt={}){return fetch(API_BASE+path,{...opt,headers:{...headers(),...(opt.headers||{})}})}
 function errText(d){return d?.error?.message||d?.error||"요청 실패"}
@@ -51,7 +51,7 @@ async function loadMarket(){
   try{
     market=await(await api("/api/market/"+encodeURIComponent(sym)+"?interval="+interval)).json();
     $("signal").textContent=market.signal?.action||"-";$("source").textContent=market.source||"-";
-    $("livePrice").textContent=market.candles?.length?won(market.candles.at(-1).closePrice):"-";
+    $("livePrice").textContent=market.candles?.length?(sym.match(/^\\d+$/)?won(market.candles.at(-1).closePrice):usd(market.candles.at(-1).closePrice)):"-";
     const i=market.indicators||{};$("sma5").textContent=won(i.sma5);$("sma20").textContent=won(i.sma20);$("rsi14").textContent=i.rsi14==null?"-":Number(i.rsi14).toFixed(1);
     drawChart(market.candles||[]);
     if(market.candles?.length)$("orderPrice").value=Math.round(Number(market.candles.at(-1).closePrice));
@@ -82,7 +82,7 @@ async function account(){
     const s=d.snapshot||{},bp=s.buying_power||{},h=s.holdings||{};
     const equity=find(h,["totalEvaluationAmount","totalEvaluationValue","totalMarketValue","totalAssetValue","totalEquity","equity"]);
     const cash=find(bp,["cashBuyingPower","buyingPower","availableAmount","availableCash","cash","orderableAmount"]);
-    $("equity").textContent=equity==null?"-":won(equity);$("cash").textContent=cash==null?"-":won(cash);
+    const valuation=s.valuation||{}; const usdCash=find(bp.USD||{},["cashBuyingPower","buyingPower","availableAmount","availableCash","cash","orderableAmount"]); const krwCash=find(bp.KRW||{},["cashBuyingPower","buyingPower","availableAmount","availableCash","cash","orderableAmount"]); $("equity").textContent=valuation.equity_krw==null?(equity==null?"-":won(equity)):won(valuation.equity_krw); $("cash").textContent=usdCash==null?(krwCash==null?"-":won(krwCash)):usd(usdCash); $("usdCash").textContent=usdCash==null?"-":usd(usdCash); $("krwCash").textContent=krwCash==null?"-":won(krwCash);
     const baseline=find(h,["totalPurchaseAmount","totalBuyAmount"]);
     $("pnl").textContent=baseline!=null&&equity!=null?(equity>=baseline?"+":"")+won(equity-baseline):"-";
     renderHoldings(h);renderOrders(s.open_orders);
@@ -122,11 +122,11 @@ async function placeOrder(){
   const sym=$("symbol").value.trim().toUpperCase(),side=$("orderSide").value,qty=Number($("orderQty").value),type=$("orderType").value,price=Number($("orderPrice").value);
   if(!liveArmed){alert("먼저 실거래 ARM을 하세요.");return}
   if(!$("confirmOrder").checked){alert("실거래 주문 확인을 체크하세요.");return}
-  if(!Number.isInteger(qty)||qty<=0){alert("수량을 확인하세요.");return}
-  const detail=side+" "+sym+" "+qty+"주 "+(type==="MARKET"?"시장가":"지정가 "+price.toLocaleString()+"원");
+  if(!(isUS&&side==="BUY"&&type==="MARKET") && (!Number.isInteger(qty)||qty<=0)){alert("수량을 확인하세요.");return} if(isUS&&side==="BUY"&&type==="MARKET"&&(!(amount>0))){alert("USD 주문금액을 확인하세요.");return}
+  const isUS=!/^\\d+$/.test(sym); const amount=Number($("orderAmount").value); const detail=isUS&&side==="BUY"&&type==="MARKET"?side+" "+sym+" $"+amount.toFixed(2)+" 시장가":side+" "+sym+" "+qty+"주 "+(type==="MARKET"?"시장가": "지정가 "+price.toLocaleString()+(isUS?" USD":"원"));
   if(!confirm("실제 계좌에 주문합니다.\n\n"+detail+"\n\n계속하시겠습니까?"))return;
   try{
-    const body={symbol:sym,side,quantity:qty,order_type:type,confirm:true};if(type==="LIMIT")body.price=price;
+    const body={symbol:sym,side,order_type:type,confirm:true}; if(isUS&&side==="BUY"&&type==="MARKET")body.order_amount=amount; else body.quantity=qty; if(type==="LIMIT")body.price=price;
     const r=await api("/api/live/order",{method:"POST",body:JSON.stringify(body)}),d=await r.json();if(!r.ok)throw Error(errText(d));
     $("confirmOrder").checked=false;alert("주문 접수 완료\n주문번호: "+(d.result?.orderId||d.orderId||"-"));await account();await liveStatus();
   }catch(e){alert(e.message)}
@@ -137,7 +137,7 @@ async function modifyOrder(id){
   const q=prompt("새 수량을 입력하세요.\n그대로면 현재 수량을 다시 입력해야 합니다.", "");
   if(!q)return;
   if(!confirm("주문 "+id+" 을(를) 정정합니다.\n가격: "+p+" / 수량: "+q))return;
-  try{const r=await api("/api/live/orders/"+encodeURIComponent(id)+"/modify",{method:"POST",body:JSON.stringify({price:Number(p),quantity:Number(q),confirm:true})}),d=await r.json();if(!r.ok)throw Error(errText(d));alert("정정 요청 완료");await account()}catch(e){alert(e.message)}
+  try{const symbolRow=id; const payload={price:Number(p),confirm:true}; if(/^\\d+$/.test($("symbol").value.trim())) payload.quantity=Number(q); const r=await api("/api/live/orders/"+encodeURIComponent(id)+"/modify",{method:"POST",body:JSON.stringify(payload)}),d=await r.json();if(!r.ok)throw Error(errText(d));alert("정정 요청 완료");await account()}catch(e){alert(e.message)}
 }
 async function cancelOrder(id){
   if(!confirm("주문 "+id+" 을(를) 취소합니다.\n계속하시겠습니까?"))return;
@@ -156,6 +156,6 @@ document.querySelectorAll(".interval").forEach(b=>b.onclick=()=>{interval=b.data
 $("saveConnection").onclick=async()=>{API_BASE=$("apiBase").value.trim().replace(/\/$/,"");CONTROL_TOKEN=$("controlToken").value.trim();localStorage.setItem("TRADING_API_BASE",API_BASE);localStorage.setItem("TRADING_CONTROL_TOKEN",CONTROL_TOKEN);await health();await liveStatus();await account();await loadMarket()};
 $("test").onclick=async()=>{await health();await liveStatus();$("connection").textContent="API: "+API_BASE+"\n관제 토큰: "+(CONTROL_TOKEN?"설정됨":"미설정")};
 $("apiBase").value=API_BASE;$("controlToken").value=CONTROL_TOKEN;
-health();liveStatus();account();loadMarket();
+$("symbol").value="AAPL"; health();liveStatus();account();loadMarket();
 setInterval(health,10000);setInterval(liveStatus,10000);setInterval(account,15000);setInterval(loadMarket,15000);
 addEventListener("resize",()=>market&&drawChart(market.candles));
