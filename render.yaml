@@ -13,6 +13,10 @@ services:
         sync: false
       - key: TOSS_ACCOUNT_SEQ
         sync: false
+      - key: LIVE_TRADING_ENABLED
+        value: "false"
+      - key: LIVE_ORDER_CONFIRM
+        sync: false
       - key: TRADING_MODE
         value: paper
       - key: MAX_ORDER_KRW
