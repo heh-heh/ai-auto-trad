@@ -54,7 +54,8 @@ async function testToss(){
   }catch{$("tossState").textContent="OFFLINE"}
 }
 async function runBacktest(){try{const d=await (await fetch(API_BASE+"/api/paper/backtest/"+SYMBOL)).json();$("btInitial").textContent=won(d.initial_cash);$("btFinal").textContent=won(d.final_equity);$("btPnl").textContent=(d.pnl>=0?"+":"")+won(d.pnl);$("btReturn").textContent=d.return_pct.toFixed(2)+"%";$("btDrawdown").textContent=d.max_drawdown_pct.toFixed(2)+"%";$("btWinRate").textContent=d.win_rate.toFixed(1)+"%";$("btTrades").textContent=d.trades.length+"건의 가상 체결 발생"}catch{$("btTrades").textContent="백테스트 실패"}}
-$("tossTest").onclick=testToss;\n$("toggle").onclick=async()=>{try{renderHealth(await (await fetch(API_BASE+"/api/trading/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!enabled})})).json())}catch{alert("서버 연결 실패")}};
+$("tossTest").onclick=testToss;
+$("toggle").onclick=async()=>{try{renderHealth(await (await fetch(API_BASE+"/api/trading/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!enabled})})).json())}catch{alert("서버 연결 실패")}};
 $("buy").onclick=()=>order("BUY");$("sell").onclick=()=>order("SELL");$("backtest").onclick=runBacktest;
 $("reset").onclick=async()=>{if(confirm("가상계좌를 초기화할까요?")){await fetch(API_BASE+"/api/paper/reset",{method:"POST"});await portfolio()}};
 addEventListener("resize",()=>market&&drawChart(market.candles,market.indicators));health();portfolio();loadMarket();setInterval(health,10000);setInterval(portfolio,10000);setInterval(loadMarket,30000);
