@@ -31,6 +31,13 @@ class PriceUpdate(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     price: float = Field(gt=0)
 
+class LiveOrder(BaseModel):
+    symbol: str = Field(min_length=1, max_length=20)
+    side: str
+    quantity: int = Field(gt=0)
+    price: float | None = Field(default=None, gt=0)
+    order_type: str = "LIMIT"
+
 def demo_candles(symbol: str, count: int = 120):
     base = 72000 if symbol == "005930" else 50000
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
@@ -62,6 +69,90 @@ async def toss_status():
         return {"connected": True, "account_configured": bool(account_seq), "mode": settings.trading_mode}
     except Exception as e:
         return {"connected": False, "account_configured": False, "mode": settings.trading_mode, "error": str(e)}
+
+@app.get("/api/live/status")
+async def live_status():
+    configured = bool(settings.toss_client_id and settings.toss_client_secret)
+    safe_to_order = (
+        settings.trading_mode.lower() == "live"
+        and settings.live_trading_enabled
+        and bool(settings.live_order_confirm)
+        and configured
+    )
+    return {
+        "mode": settings.trading_mode,
+        "credentials_configured": configured,
+        "live_trading_enabled": settings.live_trading_enabled,
+        "live_order_ready": safe_to_order,
+        "paper_only": not safe_to_order,
+    }
+
+@app.get("/api/live/account")
+async def live_account():
+    if settings.trading_mode.lower() != "live":
+        raise HTTPException(status_code=403, detail="TRADING_MODE is not live")
+    try:
+        return {"accountSeq": await toss.account_seq(), "holdings": await toss.holdings()}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.get("/api/live/orders")
+async def live_orders(status: str = "OPEN"):
+    if settings.trading_mode.lower() != "live":
+        raise HTTPException(status_code=403, detail="TRADING_MODE is not live")
+    if status not in {"OPEN", "CLOSED"}:
+        raise HTTPException(status_code=400, detail="status must be OPEN or CLOSED")
+    try:
+        return await toss.orders(status)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.get("/api/live/orders/{order_id}")
+async def live_order_detail(order_id: str):
+    if settings.trading_mode.lower() != "live":
+        raise HTTPException(status_code=403, detail="TRADING_MODE is not live")
+    try:
+        return await toss.order(order_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.post("/api/live/order")
+async def live_order(order: LiveOrder, x_live_confirm: str | None = None):
+    if settings.trading_mode.lower() != "live":
+        raise HTTPException(status_code=403, detail="Live order blocked: TRADING_MODE is not live")
+    if not settings.live_trading_enabled:
+        raise HTTPException(status_code=403, detail="Live trading is disabled")
+    if not settings.live_order_confirm:
+        raise HTTPException(status_code=503, detail="Live order confirmation is not configured")
+    if x_live_confirm != settings.live_order_confirm:
+        raise HTTPException(status_code=403, detail="Live order confirmation failed")
+
+    side = order.side.upper()
+    order_type = order.order_type.upper()
+    if side not in {"BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+    if order_type not in {"LIMIT", "MARKET"}:
+        raise HTTPException(status_code=400, detail="order_type must be LIMIT or MARKET")
+
+    notional = int(order.quantity * (order.price or 0))
+    if order_type == "LIMIT":
+        decision = validate_order(notional)
+        if not decision.allowed:
+            raise HTTPException(status_code=400, detail=decision.reason)
+
+    try:
+        result = await toss.create_order(
+            symbol=order.symbol,
+            side=side,
+            quantity=order.quantity,
+            price=order.price,
+            order_type=order_type,
+        )
+        return {"ok": True, "mode": "live", "order": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 @app.post("/api/trading/toggle")
 async def toggle(req: ToggleRequest):
