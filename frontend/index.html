@@ -5,14 +5,14 @@
 
 <section class="hero card"><div><span class="muted">실거래 엔진</span><strong id="engineState">연결 확인 중</strong><small id="serverText">API 서버 확인 중</small></div><div class="actions"><button id="engineToggle">실거래 엔진 시작</button></div></section>
 
-<section class="grid"><article class="card"><span>계좌 평가금</span><strong id="equity">-</strong></article><article class="card"><span>손익</span><strong id="pnl">-</strong></article><article class="card"><span>매수 가능금액</span><strong id="cash">-</strong></article><article class="card"><span>일일 손실</span><strong id="risk">-</strong></article></section>
+<section class="grid"><article class="card"><span>계좌 평가금</span><strong id="equity">-</strong></article><article class="card"><span>손익</span><strong id="pnl">-</strong></article><article class="card"><span>USD 매수 가능</span><strong id="cash">-</strong><small id="usdCash">-</small></article><article class="card"><span>KRW 매수 가능</span><strong id="krwCash">-</strong></article><article class="card"><span>일일 손실</span><strong id="risk">-</strong></article></section>
 
-<section class="card"><div class="section-head"><div><span class="muted"><input id="symbol" class="symbol" value="005930" maxlength="20"></span><h2>종목 시세</h2></div><div><span id="source" class="badge">-</span><strong id="livePrice" class="price">-</strong></div></div><div class="indicators"><span>SMA5 <b id="sma5">-</b></span><span>SMA20 <b id="sma20">-</b></span><span>RSI14 <b id="rsi14">-</b></span><span>전략 <b id="signal">-</b></span></div><div class="selectrow"><button data-interval="1m" class="interval active">1분봉</button><button data-interval="1d" class="interval secondary">일봉</button></div><canvas id="chart" height="300"></canvas></section>
+<section class="card"><div class="section-head"><div><span class="muted"><input id="symbol" class="symbol" value="AAPL" maxlength="20"></span><h2>종목 시세</h2></div><div><span id="source" class="badge">-</span><strong id="livePrice" class="price">-</strong></div></div><div class="indicators"><span>SMA5 <b id="sma5">-</b></span><span>SMA20 <b id="sma20">-</b></span><span>RSI14 <b id="rsi14">-</b></span><span>전략 <b id="signal">-</b></span></div><div class="selectrow"><button data-interval="1m" class="interval active">1분봉</button><button data-interval="1d" class="interval secondary">일봉</button></div><canvas id="chart" height="300"></canvas></section>
 
 <section class="grid two"><article class="card"><h2>실거래 주문</h2>
 <label>주문 방향<select id="orderSide"><option value="BUY">매수</option><option value="SELL">매도</option></select></label>
 <label>호가 유형<select id="orderType"><option value="MARKET">시장가</option><option value="LIMIT">지정가</option></select></label>
-<label>가격<input id="orderPrice" type="number" min="1"></label>
+<label>가격<input id="orderPrice" type="number" min="0.0001" step="0.0001"></label><label>USD 주문금액 (미국 시장가 매수)<input id="orderAmount" type="number" min="1" step="0.01" value="50"></label>
 <label>수량<input id="orderQty" type="number" min="1" step="1" value="1"></label>
 <label class="check"><input id="confirmOrder" type="checkbox"> 실제 계좌 주문임을 확인했습니다.</label>
 <button id="placeOrder" class="danger">실거래 주문 제출</button>
