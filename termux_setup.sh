@@ -4,15 +4,19 @@ cd "$(dirname "$0")"
 echo "== AI Auto Trader / Termux setup =="
 pkg update -y
 pkg install -y python git
-if [ ! -d ".venv" ]; then python -m venv .venv; fi
-source .venv/bin/activate
-pip install -r backend/requirements.txt
+echo
+echo "Python:"
+python --version
+echo
+echo "Git:"
+git --version
+echo
 if [ ! -f "backend/.env" ]; then
-  cp .env.example backend/.env
-  echo
-  echo "[안내] backend/.env 파일이 생성되었습니다."
-  echo "TOSS_CLIENT_ID / TOSS_CLIENT_SECRET / TOSS_ACCOUNT_SEQ를 휴대폰에서 직접 입력하세요."
+  cp backend/.env.termux.example backend/.env
+  echo "backend/.env 를 만들었습니다."
+  echo "Toss API 정보는 이 휴대폰 파일에 직접 입력하세요."
 fi
 echo
-echo "설치 완료."
-echo "서버 실행: ./termux_run.sh"
+echo "설치 완료. 추가 Python 패키지는 필요하지 않습니다."
+echo "서버 실행: bash termux_start.sh"
+echo "백그라운드: bash termux_background.sh"
