@@ -158,10 +158,21 @@ def authorized(h):
 def _numbers(v):
     if isinstance(v,dict):
         for k,x in v.items():
-            if isinstance(x,(int,float)) and not isinstance(x,bool): yield k.lower(),float(x)
+            if isinstance(x,(int,float)) and not isinstance(x,bool):
+                yield k.lower(),float(x)
+            elif isinstance(x,str):
+                s=x.strip().replace(",","")
+                # Toss API financial quantities/prices may be returned as strings.
+                # Accept only plain numeric strings, avoiding timestamps and arbitrary text.
+                try:
+                    if s and all(ch in "0123456789.-" for ch in s) and s.count(".") <= 1 and s.count("-") <= 1:
+                        yield k.lower(),float(s)
+                except ValueError:
+                    pass
             yield from _numbers(x)
     elif isinstance(v,list):
-        for x in v: yield from _numbers(x)
+        for x in v:
+            yield from _numbers(x)
 
 def _find_value(v,names):
     wanted={x.lower() for x in names}
