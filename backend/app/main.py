@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from .config import settings
@@ -7,6 +7,8 @@ from .risk import validate_order
 from .paper import PaperBroker
 from .strategy import Strategy
 import math
+import json
+import websockets
 from datetime import datetime, timedelta, timezone
 
 app = FastAPI(title="AI Auto Trader", version="0.5.0")
@@ -57,6 +59,54 @@ def demo_candles(symbol: str, count: int = 120):
 async def health():
     return {"ok": True, "mode": settings.trading_mode, "trading_enabled": trading_enabled, "paper_ready": True}
 
+async def _outbound_ip():
+    import httpx
+    async with httpx.AsyncClient(timeout=5) as client:
+        response = await client.get("https://api.ipify.org?format=json")
+        response.raise_for_status()
+        return response.json().get("ip")
+
+def _error_summary(error):
+    return {"message": str(error), "status_code": getattr(error, "status_code", None), "response": getattr(error, "response_body", None)}
+
+@app.get("/api/toss/diagnostics")
+async def toss_diagnostics():
+    result = {"credentials_configured": bool(settings.toss_client_id and settings.toss_client_secret), "outbound_ip": None, "oauth": False, "accounts": False, "holdings": False, "price": False, "orderbook": False, "account_seq_configured": bool(settings.toss_account_seq), "errors": {}}
+    try:
+        result["outbound_ip"] = await _outbound_ip()
+    except Exception as e:
+        result["errors"]["outbound_ip"] = _error_summary(e)
+    try:
+        await toss.token()
+        result["oauth"] = True
+    except Exception as e:
+        result["errors"]["oauth"] = _error_summary(e)
+        return result
+    try:
+        accounts = await toss.accounts()
+        result["accounts"] = True
+        if not result["account_seq_configured"]:
+            result["account_seq_configured"] = bool(toss._find_account_seq(accounts))
+    except Exception as e:
+        result["errors"]["accounts"] = _error_summary(e)
+    try:
+        await toss.account_seq()
+        await toss.holdings()
+        result["holdings"] = True
+    except Exception as e:
+        result["errors"]["holdings"] = _error_summary(e)
+    try:
+        await toss.price("005930")
+        result["price"] = True
+    except Exception as e:
+        result["errors"]["price"] = _error_summary(e)
+    try:
+        await toss.orderbook("005930")
+        result["orderbook"] = True
+    except Exception as e:
+        result["errors"]["orderbook"] = _error_summary(e)
+    return result
+
 @app.get("/api/toss/status")
 async def toss_status():
     try:
@@ -66,9 +116,45 @@ async def toss_status():
             account_seq = await toss.account_seq()
         except Exception:
             pass
-        return {"connected": True, "account_configured": bool(account_seq), "mode": settings.trading_mode}
+        return {"connected": True, "account_configured": bool(account_seq), "mode": settings.trading_mode, "live_api_ready": bool(account_seq)}
     except Exception as e:
         return {"connected": False, "account_configured": False, "mode": settings.trading_mode, "error": str(e)}
+
+@app.get("/api/market/{symbol}")
+async def market_data(symbol: str, interval: str = "1d"):
+    try:
+        data = await toss.candles(symbol, interval)
+        candles = data.get("result", {}).get("candles", []) if isinstance(data, dict) else []
+        if not candles:
+            raise RuntimeError("Toss returned no candles")
+        normalized = list(reversed(candles))
+        signal = strategy.evaluate(symbol, normalized)
+        return {"symbol": symbol, "source": "TOSS_LIVE", "candles": normalized, "signal": signal.__dict__, "indicators": strategy.indicators(normalized)}
+    except Exception as live_error:
+        candles = demo_candles(symbol)
+        signal = strategy.evaluate(symbol, candles)
+        return {"symbol": symbol, "source": "PAPER_DEMO_FALLBACK", "live_error": _error_summary(live_error), "candles": candles, "signal": signal.__dict__, "indicators": strategy.indicators(candles)}
+
+@app.websocket("/ws/market/{symbol}")
+async def market_websocket(websocket: WebSocket, symbol: str):
+    await websocket.accept()
+    upstream = None
+    try:
+        token = await toss.token()
+        upstream = await websockets.connect("wss://openapi-ws.tossinvest.com/ws/v1", additional_headers={"Authorization": f"Bearer {token}"}, ping_interval=30, ping_timeout=20, close_timeout=5)
+        await upstream.send(json.dumps([{"id": "aiat-market"}, {"type": "trade:kr", "codes": [symbol]}, {"type": "orderbook:kr", "codes": [symbol]}]))
+        while True:
+            await websocket.send_text(await upstream.recv())
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "error": _error_summary(e)})
+        except Exception:
+            pass
+    finally:
+        if upstream is not None:
+            await upstream.close()
 
 @app.get("/api/live/status")
 async def live_status():
