@@ -9,7 +9,7 @@ function renderHealth(d){enabled=d.trading_enabled;$("state").textContent=enable
 async function health(){try{const r=await fetch(API_BASE+"/health");if(!r.ok)throw 0;renderHealth(await r.json());$("server").textContent="ONLINE"}catch{$("server").textContent="OFFLINE"}}
 async function portfolio(){try{const d=await (await fetch(API_BASE+"/api/paper/portfolio")).json();$("equity").textContent=won(d.equity);$("cash").textContent=won(d.cash);$("pnl").textContent=(d.total_pnl>=0?"+":"")+won(d.total_pnl);renderTrades(d.trades||[])}catch{}}
 function renderTrades(ts){$("trades").innerHTML=ts.length?ts.slice(0,12).map(t=>'<div class="trade"><span class="'+(t.side==="BUY"?"buytext":"selltext")+'">'+t.side+" "+t.symbol+" × "+t.quantity+'</span><span>'+won(t.price)+'</span></div>').join(""):"거래 없음"}
-async function loadMarket(){try{market=await (await fetch(API_BASE+"/api/paper/market/"+SYMBOL)).json();$("signal").textContent=market.signal.action;drawChart(market.candles,market.indicators);$("sma5").textContent=won(market.indicators?.sma5);$("sma20").textContent=won(market.indicators?.sma20);$("rsi14").textContent=market.indicators?.rsi14==null?"-":market.indicators.rsi14.toFixed(1);$("source").textContent=market.source}catch{}}
+async function loadMarket(){try{market=await (await fetch(API_BASE+"/api/market/"+SYMBOL)).json();$("signal").textContent=market.signal.action;drawChart(market.candles,market.indicators);$("sma5").textContent=won(market.indicators?.sma5);$("sma20").textContent=won(market.indicators?.sma20);$("rsi14").textContent=market.indicators?.rsi14==null?"-":market.indicators.rsi14.toFixed(1);$("source").textContent=market.source; if(market.live_error) $("source").title=market.live_error.message || "Toss live data unavailable"; else $("source").title=""}catch{}}
 function drawChart(cs, indicators){
   const c=$("chart"),ctx=c.getContext("2d"),dpr=devicePixelRatio||1,w=c.clientWidth,h=280;
   c.width=w*dpr;c.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -50,7 +50,11 @@ async function testToss(){
     const d=await r.json();
     $("tossState").textContent=d.connected?"CONNECTED":"BLOCKED";
     $("liveMode").textContent=(d.mode||"paper").toUpperCase();
-    $("liveReady").textContent=d.connected&&d.mode==="live"?"READY":"BLOCKED";
+    $("liveReady").textContent=d.live_api_ready?"API READY":"BLOCKED";
+    const diag=await (await fetch(API_BASE+"/api/toss/diagnostics")).json();
+    $("tossOutbound").textContent=diag.outbound_ip||"-";
+    $("tossAccounts").textContent=diag.accounts?"OK":"FAIL";
+    $("tossHoldings").textContent=diag.holdings?"OK":"FAIL";
   }catch{$("tossState").textContent="OFFLINE"}
 }
 async function runBacktest(){try{const d=await (await fetch(API_BASE+"/api/paper/backtest/"+SYMBOL)).json();$("btInitial").textContent=won(d.initial_cash);$("btFinal").textContent=won(d.final_equity);$("btPnl").textContent=(d.pnl>=0?"+":"")+won(d.pnl);$("btReturn").textContent=d.return_pct.toFixed(2)+"%";$("btDrawdown").textContent=d.max_drawdown_pct.toFixed(2)+"%";$("btWinRate").textContent=d.win_rate.toFixed(1)+"%";$("btTrades").textContent=d.trades.length+"건의 가상 체결 발생"}catch{$("btTrades").textContent="백테스트 실패"}}
@@ -59,3 +63,24 @@ $("toggle").onclick=async()=>{try{renderHealth(await (await fetch(API_BASE+"/api
 $("buy").onclick=()=>order("BUY");$("sell").onclick=()=>order("SELL");$("backtest").onclick=runBacktest;
 $("reset").onclick=async()=>{if(confirm("가상계좌를 초기화할까요?")){await fetch(API_BASE+"/api/paper/reset",{method:"POST"});await portfolio()}};
 addEventListener("resize",()=>market&&drawChart(market.candles,market.indicators));health();portfolio();loadMarket();setInterval(health,10000);setInterval(portfolio,10000);setInterval(loadMarket,30000);
+
+let liveSocket;
+function connectLiveStream(){
+  try{
+    const base=API_BASE.replace(/^http/,"ws");
+    liveSocket=new WebSocket(base+"/ws/market/"+SYMBOL);
+    liveSocket.onmessage=e=>{
+      try{
+        const m=JSON.parse(e.data);
+        if(m.type==="message" && m.data){
+          const d=m.data;
+          const p=d.lastPrice ?? d.tradePrice ?? d.price;
+          if(p!=null && $("livePrice")) $("livePrice").textContent=won(p);
+        }
+      }catch{}
+    };
+    liveSocket.onclose=()=>setTimeout(connectLiveStream,15000);
+    liveSocket.onerror=()=>liveSocket.close();
+  }catch{}
+}
+connectLiveStream();
