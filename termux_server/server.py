@@ -19,6 +19,8 @@ def load_env(p):
 load_env(ENV)
 CLIENT_ID=os.getenv("TOSS_CLIENT_ID",""); CLIENT_SECRET=os.getenv("TOSS_CLIENT_SECRET",""); ACCOUNT_SEQ=os.getenv("TOSS_ACCOUNT_SEQ","")
 MODE=os.getenv("TRADING_MODE","paper").lower(); MAX_ORDER=float(os.getenv("MAX_ORDER_KRW","100000")); MAX_DAILY_LOSS=float(os.getenv("MAX_DAILY_LOSS_KRW","50000"))
+LIVE_TRADING_ENABLED=os.getenv("LIVE_TRADING_ENABLED","false").lower()=="true"
+LIVE_ARM_PHRASE=os.getenv("LIVE_ARM_PHRASE","").strip()
 ORIGINS=[x.strip() for x in os.getenv("ALLOWED_ORIGINS","https://heh-heh.github.io").split(",") if x.strip()]
 CONTROL_TOKEN=os.getenv("CONTROL_TOKEN","").strip()
 if not CONTROL_TOKEN:
@@ -32,7 +34,7 @@ if not CONTROL_TOKEN:
 def defaults():
     return {"paper_cash":10000000.0,"positions":{},"trades":[],"next_trade_id":1,"trading_enabled":False,
             "auto_enabled":False,"auto_symbol":"005930","auto_interval":"1m","auto_order_krw":50000.0,
-            "last_auto_candle":"","last_auto_action":"HOLD","last_auto_reason":"","last_error":""}
+            "last_auto_candle":"","last_auto_action":"HOLD","last_auto_reason":"","last_error":"","live_armed":False,"live_auto_enabled":False,"live_last_order_id":""}
 def load_state():
     try:
         d=json.load(open(STATE_FILE,encoding="utf-8")); s=defaults(); s.update(d); return s
@@ -135,8 +137,75 @@ def portfolio():
         eq=STATE["paper_cash"]+mv
         return {"initial_cash":10000000,"cash":STATE["paper_cash"],"market_value":mv,"equity":eq,"total_pnl":eq-10000000,"return_pct":(eq/10000000-1)*100,"holdings":hs,"trades":list(reversed(STATE["trades"][-100:]))}
 def authorized(h):
-    if h.client_address and h.client_address[0] in ("127.0.0.1","::1"):return True
     return secrets.compare_digest(h.headers.get("X-Control-Token",""),CONTROL_TOKEN)
+
+def live_guard():
+    if MODE!="live": raise RuntimeError("TRADING_MODE=live is required")
+    if not LIVE_TRADING_ENABLED: raise RuntimeError("LIVE_TRADING_ENABLED=false")
+    if not ACCOUNT_SEQ:
+        d=toss("GET","/api/v1/accounts")
+        seq=find_account(d)
+        if not seq: raise RuntimeError("No active Toss account found")
+        os.environ["TOSS_ACCOUNT_SEQ"]=seq
+    return True
+
+def live_order(symbol,side,quantity,order_type="MARKET",price=None):
+    live_guard()
+    symbol=str(symbol).upper(); side=str(side).upper(); order_type=str(order_type).upper()
+    qty=int(quantity)
+    if side not in ("BUY","SELL") or qty<=0: raise ValueError("invalid live order")
+    if order_type not in ("MARKET","LIMIT"): raise ValueError("invalid order type")
+    if order_type=="LIMIT" and (price is None or float(price)<=0): raise ValueError("limit price required")
+    ref=float(price) if price is not None else price_value_for_risk(symbol)
+    if ref is not None and qty*float(ref)>MAX_ORDER: raise ValueError(f"live max order is {MAX_ORDER:,.0f} KRW")
+    cid="ait-"+secrets.token_hex(10)
+    body={"clientOrderId":cid,"symbol":symbol,"side":side,"orderType":order_type,"quantity":str(qty)}
+    if order_type=="LIMIT": body["price"]=str(int(float(price))) if symbol.isdigit() else str(price)
+    result=toss("POST","/api/v1/orders",body=body,account=True)
+    with LOCK:
+        STATE["live_last_order_id"]=result.get("result",{}).get("orderId","")
+        STATE["last_error"]=""
+        save()
+    return result
+
+def price_value_for_risk(symbol):
+    try:return price(symbol)
+    except Exception:return None
+
+def live_account_snapshot():
+    live_guard()
+    holdings=toss("GET","/api/v1/holdings",account=True)
+    buying=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
+    orders=toss("GET","/api/v1/orders",{"status":"OPEN"},account=True)
+    return {"holdings":holdings,"buying_power":buying,"open_orders":orders}
+
+def live_auto_loop():
+    while True:
+        try:
+            with LOCK:
+                active=STATE.get("live_armed",False) and STATE.get("live_auto_enabled",False) and STATE.get("trading_enabled",False)
+                sym=STATE.get("auto_symbol","005930"); iv=STATE.get("auto_interval","1m")
+                budget=float(STATE.get("auto_order_krw",50000)); last=STATE.get("last_auto_candle","")
+            if active and MODE=="live" and LIVE_TRADING_ENABLED:
+                m=market(sym,iv); cs=m["candles"]; cid=cs[-1].get("timestamp","")
+                if cid and cid!=last:
+                    sig=m["signal"]; p=price(sym)
+                    if sig["action"]=="BUY":
+                        n=int(min(budget,MAX_ORDER)//p)
+                        if n: live_order(sym,"BUY",n,"MARKET")
+                    elif sig["action"]=="SELL":
+                        h=toss("GET","/api/v1/holdings",account=True)
+                        n=0
+                        for row in (h.get("result",{}).get("holdings",[]) if isinstance(h,dict) else []):
+                            if str(row.get("symbol","")).upper()==sym:
+                                n=int(float(row.get("quantity",row.get("holdingQuantity",0)) or 0)); break
+                        if n: live_order(sym,"SELL",n,"MARKET")
+                    with LOCK:
+                        STATE["last_auto_candle"]=cid;STATE["last_auto_action"]=sig["action"];STATE["last_auto_reason"]=sig["reason"];save()
+        except Exception as e:
+            with LOCK: STATE["last_error"]=str(e); save()
+        time.sleep(20)
+
 def auto_loop():
     while True:
         try:
@@ -180,11 +249,12 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/trades/"):return self.send_json(toss("GET","/api/v1/trades",{"symbol":path.rsplit("/",1)[-1],"count":50}))
             if path=="/api/paper/portfolio":return self.send_json(portfolio())
             if path=="/api/auto/status":return self.send_json({k:STATE[k] for k in ("auto_enabled","auto_symbol","auto_interval","auto_order_krw","last_auto_candle","last_auto_action","last_auto_reason","last_error")})
-            if path=="/api/live/status":return self.send_json({"mode":MODE,"credentials_configured":bool(CLIENT_ID and CLIENT_SECRET),"account_configured":bool(ACCOUNT_SEQ),"live_trading_enabled":False,"live_order_ready":False,"paper_only":True})
+            if path=="/api/live/status":
+                return self.send_json({"mode":MODE,"credentials_configured":bool(CLIENT_ID and CLIENT_SECRET),"account_configured":bool(ACCOUNT_SEQ),"live_trading_enabled":LIVE_TRADING_ENABLED,"live_armed":bool(STATE.get("live_armed",False)),"live_auto_enabled":bool(STATE.get("live_auto_enabled",False)),"live_order_ready":MODE=="live" and LIVE_TRADING_ENABLED and bool(STATE.get("live_armed",False))})
             if path=="/api/live/account":
                 if not self.guard():return
                 if MODE!="live":return self.send_json({"error":"live mode is disabled"},403)
-                return self.send_json({"accountSeq":ACCOUNT_SEQ,"holdings":toss("GET","/api/v1/holdings",account=True)})
+                return self.send_json({"accountSeq":ACCOUNT_SEQ,"snapshot":live_account_snapshot()})
             if path=="/api/live/orders":
                 if not self.guard():return
                 return self.send_json(toss("GET","/api/v1/orders",{"status":q.get("status",["OPEN"])[0]},account=True))
@@ -209,6 +279,21 @@ class Handler(BaseHTTPRequestHandler):
                     if "order_krw" in b:STATE["auto_order_krw"]=max(1000,min(float(b["order_krw"]),MAX_ORDER))
                     save()
                 return self.send_json({"ok":True,"auto":{k:STATE[k] for k in ("auto_enabled","auto_symbol","auto_interval","auto_order_krw")}})
+            if path=="/api/live/arm":
+                if MODE!="live" or not LIVE_TRADING_ENABLED:return self.send_json({"error":"live trading is not enabled in local config"},403)
+                if not LIVE_ARM_PHRASE or not secrets.compare_digest(str(b.get("phrase","")),LIVE_ARM_PHRASE):return self.send_json({"error":"invalid live arm phrase"},403)
+                with LOCK:STATE["live_armed"]=True;STATE["live_auto_enabled"]=False;save()
+                return self.send_json({"ok":True,"live_armed":True,"live_auto_enabled":False})
+            if path=="/api/live/disarm":
+                with LOCK:STATE["live_armed"]=False;STATE["live_auto_enabled"]=False;save()
+                return self.send_json({"ok":True,"live_armed":False,"live_auto_enabled":False})
+            if path=="/api/live/auto":
+                if not STATE.get("live_armed",False):return self.send_json({"error":"live engine is not armed"},403)
+                with LOCK:STATE["live_auto_enabled"]=bool(b.get("enabled",False));save()
+                return self.send_json({"ok":True,"live_auto_enabled":STATE["live_auto_enabled"]})
+            if path=="/api/live/order":
+                if not STATE.get("live_armed",False):return self.send_json({"error":"live engine is not armed"},403)
+                return self.send_json(live_order(b["symbol"],b["side"],b.get("quantity"),b.get("order_type","MARKET"),b.get("price")),201)
             if path=="/api/paper/order":return self.send_json(paper_order(str(b["symbol"]).upper(),b["side"],b["quantity"],b["price"]),201)
             if path=="/api/paper/reset":
                 with LOCK:STATE.clear();STATE.update(defaults());save()
@@ -219,4 +304,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__=="__main__":
     threading.Thread(target=auto_loop,daemon=True).start()
+    threading.Thread(target=live_auto_loop,daemon=True).start()
     port=int(os.getenv("PORT","8000"));print("AI Auto Trader - Termux");print("http://127.0.0.1:"+str(port)+"/health");ThreadingHTTPServer(("0.0.0.0",port),Handler).serve_forever()
