@@ -331,7 +331,28 @@ def live_account_snapshot():
     buying_krw=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
     buying_usd=toss("GET","/api/v1/buying-power",{"currency":"USD"},account=True)
     orders=toss("GET","/api/v1/orders",{"status":"OPEN"},account=True)
-    return {"holdings":holdings,"buying_power":{"KRW":buying_krw,"USD":buying_usd},"open_orders":orders}
+    rows=list(_holding_rows(holdings)); seen=set(); holding_krw=0.0; holding_usd=0.0
+    for row in rows:
+        marker=id(row)
+        if marker in seen: continue
+        seen.add(marker)
+        value=_find_value(row,{"marketValue","evaluationAmount","evaluationValue","evaluationPriceAmount","holdingValue","assetValue"})
+        if value is None:
+            q=_find_value(row,{"quantity","holdingQuantity","sellableQuantity","availableQuantity","balanceQuantity"})
+            p=_find_value(row,{"currentPrice","lastPrice","evaluationPrice","marketPrice","price"})
+            if q is not None and p is not None: value=q*p
+        if value is None: continue
+        sym=str(row.get("symbol",row.get("stockCode",""))) if isinstance(row,dict) else ""
+        cur=str(row.get("currency","")).upper() if isinstance(row,dict) else ""
+        if cur not in ("KRW","USD"): cur="USD" if is_us_symbol(sym) else "KRW"
+        if cur=="USD": holding_usd+=float(value)
+        else: holding_krw+=float(value)
+    krw_cash=_buying_power_value(buying_krw) or 0.0
+    usd_cash=_buying_power_value(buying_usd) or 0.0
+    rate=usd_krw_rate()
+    equity_krw=krw_cash+holding_krw+(usd_cash+holding_usd)*rate
+    return {"holdings":holdings,"buying_power":{"KRW":buying_krw,"USD":buying_usd},"open_orders":orders,
+            "valuation":{"equity_krw":equity_krw,"krw_cash":krw_cash,"usd_cash":usd_cash,"holding_krw":holding_krw,"holding_usd":holding_usd,"usd_krw_rate":rate}}
 
 def live_auto_loop():
     while True:
