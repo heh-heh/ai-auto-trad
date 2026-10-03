@@ -272,6 +272,12 @@ def live_guard():
         ACCOUNT_SEQ=seq
     return True
 
+def _buying_power_value(v):
+    return _find_value(v,{"cashBuyingPower","buyingPower","availableAmount","availableCash","cash","orderableAmount"})
+
+def _sellable_value(v):
+    return _find_value(v,{"quantity","sellableQuantity","availableQuantity","orderableQuantity"})
+
 def live_order(symbol,side,quantity,order_type="MARKET",price=None):
     live_guard()
     live_daily_risk_check()
@@ -282,16 +288,44 @@ def live_order(symbol,side,quantity,order_type="MARKET",price=None):
     if order_type=="LIMIT" and (price is None or float(price)<=0): raise ValueError("limit price required")
     ref=float(price) if price is not None else price_value_for_risk(symbol)
     if ref is None or ref<=0: raise ValueError("live price unavailable; order blocked")
-    if qty*float(ref)>MAX_ORDER*0.95: raise ValueError(f"live max order is {MAX_ORDER:,.0f} KRW (5% market buffer required)")
+    notional=qty*ref
+    if notional>MAX_ORDER*0.95: raise ValueError(f"live max order is {MAX_ORDER:,.0f} KRW (5% market buffer required)")
+    if side=="BUY":
+        bp=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
+        available=_buying_power_value(bp)
+        if available is not None and notional>available: raise ValueError(f"insufficient buying power: {available:,.0f} KRW available")
+    else:
+        sd=toss("GET","/api/v1/sellable-quantity",{"symbol":symbol},account=True)
+        available=_sellable_value(sd)
+        if available is not None and qty>int(available): raise ValueError(f"sellable quantity is {int(available)}")
     cid="ait-"+secrets.token_hex(10)
     body={"clientOrderId":cid,"symbol":symbol,"side":side,"orderType":order_type,"quantity":str(qty)}
     if order_type=="LIMIT": body["price"]=str(int(float(price))) if symbol.isdigit() else str(price)
     result=toss("POST","/api/v1/orders",body=body,account=True)
     with LOCK:
         STATE["live_last_order_id"]=result.get("result",{}).get("orderId","")
-        STATE["last_error"]=""
-        save()
+        STATE["last_error"]=""; save()
     return result
+
+def live_modify(order_id,quantity=None,price=None):
+    live_guard()
+    if not order_id: raise ValueError("order id required")
+    body={}
+    if quantity is not None:
+        q=int(quantity)
+        if q<=0: raise ValueError("quantity must be positive")
+        body["quantity"]=str(q)
+    if price is not None:
+        p=float(price)
+        if p<=0: raise ValueError("price must be positive")
+        body["price"]=str(int(p))
+    if not body: raise ValueError("quantity or price required")
+    return toss("POST",f"/api/v1/orders/{order_id}/modify",body=body,account=True)
+
+def live_cancel(order_id):
+    live_guard()
+    if not order_id: raise ValueError("order id required")
+    return toss("POST",f"/api/v1/orders/{order_id}/cancel",body={},account=True)
 
 def price_value_for_risk(symbol):
     try:return price(symbol)
@@ -368,7 +402,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         p=urlparse(self.path);path=p.path;q=parse_qs(p.query)
         try:
-            if path=="/health":return self.send_json({"ok":True,"server":"termux","mode":MODE,"trading_enabled":STATE["trading_enabled"],"auto_enabled":STATE["auto_enabled"],"paper_ready":True})
+            if path=="/health":return self.send_json({"ok":True,"server":"termux","mode":MODE,"trading_enabled":STATE["trading_enabled"],"auto_enabled":STATE["live_auto_enabled"],"live_armed":STATE["live_armed"],"live_halted":STATE["live_halted"]})
             if path=="/api/config":return self.send_json({"mode":MODE,"max_order_krw":MAX_ORDER,"max_daily_loss_krw":MAX_DAILY_LOSS,"control_token_configured":True})
             if path=="/api/toss/status":
                 try:d=toss("GET","/api/v1/accounts");return self.send_json({"connected":True,"account_configured":bool(ACCOUNT_SEQ or find_account(d)),"mode":MODE,"live_api_ready":bool(ACCOUNT_SEQ or find_account(d))})
@@ -378,7 +412,7 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/market/"):return self.send_json(market(path.rsplit("/",1)[-1],q.get("interval",["1m"])[0]))
             if path.startswith("/api/orderbook/"):return self.send_json(toss("GET","/api/v1/orderbook",{"symbol":path.rsplit("/",1)[-1]}))
             if path.startswith("/api/trades/"):return self.send_json(toss("GET","/api/v1/trades",{"symbol":path.rsplit("/",1)[-1],"count":50}))
-            if path=="/api/paper/portfolio":return self.send_json(portfolio())
+            if path=="/api/paper/portfolio":return self.send_json({"error":"paper trading has been removed"},410)
             if path=="/api/auto/status":return self.send_json({k:STATE[k] for k in ("auto_enabled","auto_symbol","auto_interval","auto_order_krw","last_auto_candle","last_auto_action","last_auto_reason","last_error")})
             if path=="/api/live/config":
                 if not self.guard():return
@@ -416,8 +450,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             b=self.body()
             if path=="/api/trading/toggle":
-                with LOCK:STATE["trading_enabled"]=bool(b.get("enabled",not STATE["trading_enabled"]));save()
-                return self.send_json({"ok":True,"trading_enabled":STATE["trading_enabled"],"auto_enabled":STATE["auto_enabled"]})
+                with LOCK:
+                    STATE["trading_enabled"]=bool(b.get("enabled",not STATE["trading_enabled"]))
+                    if not STATE["trading_enabled"]: STATE["live_auto_enabled"]=False
+                    save()
+                return self.send_json({"ok":True,"trading_enabled":STATE["trading_enabled"],"auto_enabled":STATE["live_auto_enabled"]})
             if path=="/api/auto/config":
                 with LOCK:
                     if "enabled" in b:STATE["auto_enabled"]=bool(b["enabled"])
@@ -438,22 +475,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok":True,"live_armed":False,"live_auto_enabled":False})
             if path=="/api/live/auto":
                 if not STATE.get("live_armed",False):return self.send_json({"error":"live engine is not armed"},403)
+                if bool(b.get("enabled",False)) and not STATE.get("trading_enabled",False):return self.send_json({"error":"live engine is stopped"},403)
                 if bool(b.get("enabled",False)): live_daily_risk_check()
                 with LOCK:STATE["live_auto_enabled"]=bool(b.get("enabled",False));save()
                 return self.send_json({"ok":True,"live_auto_enabled":STATE["live_auto_enabled"]})
             if path=="/api/live/order":
                 if not STATE.get("live_armed",False):return self.send_json({"error":"live engine is not armed"},403)
+                if b.get("confirm") is not True:return self.send_json({"error":"live order confirmation required"},400)
                 sym=str(b["symbol"]).upper(); side=str(b["side"]).upper(); qty=int(b.get("quantity",0))
-                if side=="SELL":
-                    sd=toss("GET","/api/v1/sellable-quantity",{"symbol":sym},account=True)
-                    raw=sd.get("result",{}) if isinstance(sd,dict) else {}
-                    available=int(float(raw.get("quantity",raw.get("sellableQuantity",0)) or 0))
-                    if qty>available:return self.send_json({"error":f"sellable quantity is {available}"},400)
                 return self.send_json(live_order(sym,side,qty,b.get("order_type","MARKET"),b.get("price")),201)
-            if path=="/api/paper/order":return self.send_json(paper_order(str(b["symbol"]).upper(),b["side"],b["quantity"],b["price"]),201)
-            if path=="/api/paper/reset":
-                with LOCK:STATE.clear();STATE.update(defaults());save()
-                return self.send_json({"ok":True})
+            if path.startswith("/api/live/orders/") and path.endswith("/modify"):
+                oid=path.split("/")[-2]
+                if not b.get("confirm"):return self.send_json({"error":"order modification confirmation required"},400)
+                return self.send_json(live_modify(oid,b.get("quantity"),b.get("price")))
+            if path.startswith("/api/live/orders/") and path.endswith("/cancel"):
+                oid=path.split("/")[-2]
+                if not b.get("confirm"):return self.send_json({"error":"order cancellation confirmation required"},400)
+                return self.send_json(live_cancel(oid))
+            if path=="/api/paper/order":return self.send_json({"error":"paper trading has been removed"},410)
+            if path=="/api/paper/reset":return self.send_json({"error":"paper trading has been removed"},410)
             return self.send_json({"error":"not found"},404)
         except Exception as e:return self.send_json({"error":str(e)},400)
     def log_message(self,fmt,*args):print("[HTTP]",fmt%args)
