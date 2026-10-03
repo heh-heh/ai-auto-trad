@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import json, os, time, math, secrets, threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import Request, urlopen
@@ -188,7 +188,7 @@ def live_equity_snapshot():
 
 def live_daily_risk_check():
     snap=live_equity_snapshot()
-    today=datetime.now(timezone.utc).date().isoformat()
+    today=datetime.now(timezone(timedelta(hours=9))).date().isoformat()
     with LOCK:
         if STATE.get("live_risk_date")!=today or STATE.get("live_risk_baseline") is None:
             STATE["live_risk_date"]=today; STATE["live_risk_baseline"]=snap["equity"]; STATE["live_daily_loss"]=0.0; STATE["live_halted"]=False
@@ -220,7 +220,8 @@ def live_order(symbol,side,quantity,order_type="MARKET",price=None):
     if order_type not in ("MARKET","LIMIT"): raise ValueError("invalid order type")
     if order_type=="LIMIT" and (price is None or float(price)<=0): raise ValueError("limit price required")
     ref=float(price) if price is not None else price_value_for_risk(symbol)
-    if ref is not None and qty*float(ref)>MAX_ORDER: raise ValueError(f"live max order is {MAX_ORDER:,.0f} KRW")
+    if ref is None or ref<=0: raise ValueError("live price unavailable; order blocked")
+    if qty*float(ref)>MAX_ORDER*0.95: raise ValueError(f"live max order is {MAX_ORDER:,.0f} KRW (5% market buffer required)")
     cid="ait-"+secrets.token_hex(10)
     body={"clientOrderId":cid,"symbol":symbol,"side":side,"orderType":order_type,"quantity":str(qty)}
     if order_type=="LIMIT": body["price"]=str(int(float(price))) if symbol.isdigit() else str(price)
