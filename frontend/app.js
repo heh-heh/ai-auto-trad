@@ -12,7 +12,10 @@ function numbers(v){
     if(Array.isArray(x)) return x.forEach(walk);
     if(x&&typeof x==="object") for(const [k,val] of Object.entries(x)){
       if(typeof val==="number") out.push([k.toLowerCase(),val]);
-      else if(typeof val==="string"&&/^-?[d,]+(?:\.\d+)?$/.test(val)) out.push([k.toLowerCase(),Number(val.replaceAll(",",""))]);
+      else if(typeof val==="string"){
+        const n=Number(val.replaceAll(",","").trim());
+        if(Number.isFinite(n)&&val.trim()!=="") out.push([k.toLowerCase(),n]);
+      }
       walk(val);
     }
   }; walk(v); return out;
