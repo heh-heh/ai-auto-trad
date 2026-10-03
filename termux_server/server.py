@@ -40,11 +40,12 @@ def load_state():
         d=json.load(open(STATE_FILE,encoding="utf-8")); s=defaults(); s.update(d); return s
     except Exception: return defaults()
 STATE=load_state(); LOCK=threading.RLock()
-STATE["live_armed"]=False; STATE["live_auto_enabled"]=False; STATE["live_halted"]=False
-save()
 def save():
     with LOCK:
         tmp=STATE_FILE+".tmp"; json.dump(STATE,open(tmp,"w",encoding="utf-8"),ensure_ascii=False,indent=2); os.replace(tmp,STATE_FILE)
+
+STATE["live_armed"]=False; STATE["live_auto_enabled"]=False; STATE["live_halted"]=False
+save()
 
 TOKEN=None; TOKEN_UNTIL=0
 def find_account(v):
@@ -202,6 +203,7 @@ def live_daily_risk_check():
 def live_guard():
     if MODE!="live": raise RuntimeError("TRADING_MODE=live is required")
     if not LIVE_TRADING_ENABLED: raise RuntimeError("LIVE_TRADING_ENABLED=false")
+    if STATE.get("live_halted",False): raise RuntimeError("live trading halted by risk control")
     if not ACCOUNT_SEQ:
         d=toss("GET","/api/v1/accounts")
         seq=find_account(d)
@@ -290,9 +292,10 @@ def auto_loop():
 
 class Handler(BaseHTTPRequestHandler):
     def send_json(self,v,status=200):
-        raw=json.dumps(v,ensure_ascii=False).encode();o=self.headers.get("Origin","");self.send_response(status);self.send_header("Content-Type","application/json; charset=utf-8")
+        raw=json.dumps(v,ensure_ascii=False).encode();o=self.headers.get("Origin","")
         if o and o not in ORIGINS:
-            self.send_response(403); self.end_headers(); return
+            self.send_response(403); self.send_header("Content-Type","application/json; charset=utf-8"); self.end_headers(); return
+        self.send_response(status); self.send_header("Content-Type","application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin",o if o in ORIGINS else (ORIGINS[0] if ORIGINS else "null"));self.send_header("Access-Control-Allow-Headers","Content-Type,X-Control-Token");self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS");self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(raw)));self.end_headers();self.wfile.write(raw)
     def body(self):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length","0"))) or b"{}")
