@@ -113,8 +113,14 @@ class TossClient:
     async def order(self, order_id: str):
         return await self._get(f"/api/v1/orders/{order_id}", account=True)
 
-    async def buying_power(self, symbol: str):
-        return await self._get("/api/v1/buying-power", {"symbol": symbol}, account=True)
+    async def buying_power(self, currency: str = "KRW"):
+        currency = currency.upper()
+        if currency not in {"KRW", "USD"}:
+            raise ValueError("currency must be KRW or USD")
+        return await self._get("/api/v1/buying-power", {"currency": currency}, account=True)
+
+    async def orderbook(self, symbol: str):
+        return await self._get("/api/v1/orderbook", {"symbol": symbol})
 
     async def sellable_quantity(self, symbol: str):
         return await self._get("/api/v1/sellable-quantity", {"symbol": symbol}, account=True)
