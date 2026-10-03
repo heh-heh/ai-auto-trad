@@ -107,6 +107,14 @@ class TossClient:
     async def holdings(self):
         return await self._get("/api/v1/holdings", account=True)
 
+    async def daily_profit_loss_krw(self):
+        data = await self.holdings()
+        value = data.get("result", data) if isinstance(data, dict) else data
+        try:
+            return float(value["dailyProfitLoss"]["amount"]["krw"])
+        except (KeyError, TypeError, ValueError):
+            raise RuntimeError("Toss holdings response did not contain dailyProfitLoss.amount.krw")
+
     async def orders(self, status: str = "OPEN"):
         return await self._get("/api/v1/orders", {"status": status}, account=True)
 
