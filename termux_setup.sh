@@ -4,10 +4,8 @@ cd "$(dirname "$0")"
 echo "== AI Auto Trader / Termux setup =="
 pkg update -y
 pkg install -y python git
-python -m pip install --upgrade pip
 if [ ! -d ".venv" ]; then python -m venv .venv; fi
 source .venv/bin/activate
-pip install --upgrade pip
 pip install -r backend/requirements.txt
 if [ ! -f "backend/.env" ]; then
   cp .env.example backend/.env
