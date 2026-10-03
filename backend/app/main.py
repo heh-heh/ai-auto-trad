@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from .config import settings
@@ -117,7 +117,7 @@ async def live_order_detail(order_id: str):
         raise HTTPException(status_code=502, detail=str(e))
 
 @app.post("/api/live/order")
-async def live_order(order: LiveOrder, x_live_confirm: str | None = None):
+async def live_order(order: LiveOrder, x_live_confirm: str | None = Header(default=None, alias="X-Live-Confirm")):
     if settings.trading_mode.lower() != "live":
         raise HTTPException(status_code=403, detail="Live order blocked: TRADING_MODE is not live")
     if not settings.live_trading_enabled:
@@ -134,11 +134,12 @@ async def live_order(order: LiveOrder, x_live_confirm: str | None = None):
     if order_type not in {"LIMIT", "MARKET"}:
         raise HTTPException(status_code=400, detail="order_type must be LIMIT or MARKET")
 
-    notional = int(order.quantity * (order.price or 0))
-    if order_type == "LIMIT":
-        decision = validate_order(notional)
-        if not decision.allowed:
-            raise HTTPException(status_code=400, detail=decision.reason)
+    if order_type == "MARKET":
+        raise HTTPException(status_code=400, detail="MARKET orders are disabled by the safety layer; use LIMIT orders")
+    notional = int(order.quantity * order.price)
+    decision = validate_order(notional)
+    if not decision.allowed:
+        raise HTTPException(status_code=400, detail=decision.reason)
 
     try:
         result = await toss.create_order(
