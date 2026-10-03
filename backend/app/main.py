@@ -9,7 +9,7 @@ from .strategy import Strategy
 import math
 from datetime import datetime, timedelta, timezone
 
-app = FastAPI(title="AI Auto Trader", version="0.4.0")
+app = FastAPI(title="AI Auto Trader", version="0.5.0")
 origins = [x.strip() for x in settings.allowed_origins.split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
 
@@ -72,7 +72,7 @@ async def toggle(req: ToggleRequest):
 @app.get("/api/paper/portfolio")
 async def paper_portfolio():
     symbols = list(paper.positions.keys())
-    prices = {s: demo_candles(s, 1)[0]["closePrice"] for s in symbols}
+    prices = {s: demo_candles(s)[-1]["closePrice"] for s in symbols}
     return paper.snapshot(prices)
 
 @app.post("/api/paper/order")
@@ -102,7 +102,7 @@ async def paper_price(update: PriceUpdate):
 async def paper_market(symbol: str):
     candles = demo_candles(symbol)
     signal = strategy.evaluate(symbol, candles)
-    return {"symbol": symbol, "source": "PAPER_DEMO", "candles": candles, "signal": signal.__dict__}
+    return {"symbol": symbol, "source": "PAPER_DEMO", "candles": candles, "signal": signal.__dict__, "indicators": strategy.indicators(candles)}
 
 @app.get("/api/paper/signal/{symbol}")
 async def paper_signal(symbol: str):
@@ -111,26 +111,58 @@ async def paper_signal(symbol: str):
 @app.get("/api/paper/backtest/{symbol}")
 async def paper_backtest(symbol: str):
     candles = demo_candles(symbol, 120)
-    cash = 1_000_000.0
+    initial_cash = 1_000_000.0
+    cash = initial_cash
     shares = 0
     trades = []
+    equity_curve = []
+    closed_trade_pnls = []
+    entry_price = None
+    peak = initial_cash
+    max_drawdown_pct = 0.0
+
     for i in range(20, len(candles)):
-        window = candles[i-19:i+1]
+        window = candles[:i + 1]
         signal = strategy.evaluate(symbol, window)
         price = float(candles[i]["closePrice"])
+
         if signal.action == "BUY" and shares == 0:
             qty = int(cash // price)
             if qty:
                 cash -= qty * price
                 shares = qty
+                entry_price = price
                 trades.append({"side": "BUY", "price": price, "quantity": qty, "timestamp": candles[i]["timestamp"]})
         elif signal.action == "SELL" and shares > 0:
             cash += shares * price
+            if entry_price is not None:
+                closed_trade_pnls.append((price - entry_price) * shares)
             trades.append({"side": "SELL", "price": price, "quantity": shares, "timestamp": candles[i]["timestamp"]})
             shares = 0
+            entry_price = None
+
+        equity = cash + shares * price
+        peak = max(peak, equity)
+        drawdown_pct = ((equity - peak) / peak * 100) if peak else 0
+        max_drawdown_pct = min(max_drawdown_pct, drawdown_pct)
+        equity_curve.append({"timestamp": candles[i]["timestamp"], "equity": round(equity, 2)})
+
     final_price = float(candles[-1]["closePrice"])
-    equity = cash + shares * final_price
-    return {"symbol": symbol, "initial_cash": 1_000_000, "final_equity": equity, "pnl": equity - 1_000_000, "return_pct": (equity / 1_000_000 - 1) * 100, "trades": trades}
+    final_equity = cash + shares * final_price
+    win_rate = (sum(1 for x in closed_trade_pnls if x > 0) / len(closed_trade_pnls) * 100) if closed_trade_pnls else 0
+    return {
+        "symbol": symbol,
+        "initial_cash": initial_cash,
+        "final_equity": final_equity,
+        "pnl": final_equity - initial_cash,
+        "return_pct": (final_equity / initial_cash - 1) * 100,
+        "max_drawdown_pct": max_drawdown_pct,
+        "closed_trades": len(closed_trade_pnls),
+        "win_rate": win_rate,
+        "open_position": shares,
+        "trades": trades,
+        "equity_curve": equity_curve,
+    }
 
 @app.post("/api/order/check")
 async def order_check(notional_krw: int):
