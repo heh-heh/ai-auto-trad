@@ -10,3 +10,7 @@ venv/
 .DS_Store
 node_modules/
 dist/
+termux_server/state.json
+termux_server/state.json.tmp
+termux_server/.control_token
+logs/
