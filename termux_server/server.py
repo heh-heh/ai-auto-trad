@@ -189,6 +189,8 @@ def live_auto_loop():
             if active and MODE=="live" and LIVE_TRADING_ENABLED:
                 m=market(sym,iv); cs=m["candles"]; cid=cs[-1].get("timestamp","")
                 if cid and cid!=last:
+                    if m.get("source")!="TOSS_LIVE":
+                        raise RuntimeError("live trading halted: live market data unavailable")
                     sig=m["signal"]; p=price(sym)
                     if sig["action"]=="BUY":
                         n=int(min(budget,MAX_ORDER)//p)
@@ -261,6 +263,11 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/live/buying-power":
                 if not self.guard():return
                 return self.send_json(toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True))
+            if path.startswith("/api/live/sellable/"):
+                if not self.guard():return
+                if MODE!="live":return self.send_json({"error":"live mode is disabled"},403)
+                sym=path.rsplit("/",1)[-1]
+                return self.send_json(toss("GET","/api/v1/sellable-quantity",{"symbol":sym},account=True))
             return self.send_json({"error":"not found"},404)
         except Exception as e:return self.send_json({"error":str(e)},502)
     def do_POST(self):
@@ -293,7 +300,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"ok":True,"live_auto_enabled":STATE["live_auto_enabled"]})
             if path=="/api/live/order":
                 if not STATE.get("live_armed",False):return self.send_json({"error":"live engine is not armed"},403)
-                return self.send_json(live_order(b["symbol"],b["side"],b.get("quantity"),b.get("order_type","MARKET"),b.get("price")),201)
+                sym=str(b["symbol"]).upper(); side=str(b["side"]).upper(); qty=int(b.get("quantity",0))
+                if side=="SELL":
+                    sd=toss("GET","/api/v1/sellable-quantity",{"symbol":sym},account=True)
+                    raw=sd.get("result",{}) if isinstance(sd,dict) else {}
+                    available=int(float(raw.get("quantity",raw.get("sellableQuantity",0)) or 0))
+                    if qty>available:return self.send_json({"error":f"sellable quantity is {available}"},400)
+                return self.send_json(live_order(sym,side,qty,b.get("order_type","MARKET"),b.get("price")),201)
             if path=="/api/paper/order":return self.send_json(paper_order(str(b["symbol"]).upper(),b["side"],b["quantity"],b["price"]),201)
             if path=="/api/paper/reset":
                 with LOCK:STATE.clear();STATE.update(defaults());save()
