@@ -3,7 +3,7 @@ let CONTROL_TOKEN=localStorage.getItem("TRADING_CONTROL_TOKEN")||"";
 let enabled=false,autoEnabled=false,market=null,interval="1m";
 const $=id=>document.getElementById(id),won=n=>"₩"+Math.round(Number(n||0)).toLocaleString("ko-KR");
 function headers(){return CONTROL_TOKEN?{"Content-Type":"application/json","X-Control-Token":CONTROL_TOKEN}:{"Content-Type":"application/json"}}
-async function api(path,opt={}){return fetch(API_BASE+path,{...opt,headers:{...(opt.headers||{}),...(opt.method?headers():{})}})}
+async function api(path,opt={}){return fetch(API_BASE+path,{...opt,headers:{...headers(),...(opt.headers||{})}})}
 function renderHealth(d){enabled=!!d.trading_enabled;$("state").textContent=enabled?"엔진 실행 중":"엔진 중지";$("status").textContent=enabled?"RUNNING":"STOPPED";$("status").className="badge "+(enabled?"running":"stopped");$("toggle").textContent=enabled?"엔진 중지":"엔진 시작";autoEnabled=!!d.auto_enabled;$("autoToggle").textContent=autoEnabled?"자동매매 ON":"자동매매 OFF"}
 async function health(){try{const d=await(await api("/health")).json();renderHealth(d);$("serverText").textContent=API_BASE+" · ONLINE";return d}catch{$("status").textContent="OFFLINE";$("status").className="badge stopped";$("serverText").textContent="API 서버에 연결할 수 없습니다"}}
 async function portfolio(){try{const d=await(await api("/api/paper/portfolio")).json();$("equity").textContent=won(d.equity);$("cash").textContent=won(d.cash);$("pnl").textContent=(d.total_pnl>=0?"+":"")+won(d.total_pnl);$("holdings").innerHTML=d.holdings?.length?d.holdings.map(x=>`<div class="trade"><span>${x.symbol} × ${x.quantity}</span><span>${won(x.market_value)} / ${x.unrealized_pnl>=0?"+":""}${won(x.unrealized_pnl)}</span></div>`).join(""):"보유 종목 없음";renderTrades(d.trades||[])}catch{}}
@@ -24,3 +24,26 @@ $("saveConnection").onclick=async()=>{API_BASE=$("apiBase").value.trim().replace
 $("test").onclick=async()=>{await health();$("connection").textContent=`API: ${API_BASE}\nToken: ${CONTROL_TOKEN?"설정됨":"미설정"}`};
 $("apiBase").value=API_BASE;$("controlToken").value=CONTROL_TOKEN;
 health();portfolio();loadMarket();setInterval(health,10000);setInterval(portfolio,10000);setInterval(loadMarket,15000);addEventListener("resize",()=>market&&drawChart(market.candles));
+
+async function liveStatus(){
+  try{
+    const r=await api("/api/live/status"),d=await r.json();
+    const box=$("liveState"); if(!box)return;
+    box.textContent=d.live_order_ready?(d.live_auto_enabled?"실거래 자동매매 ARM + ON":"실거래 ARM 완료"):(d.mode==="live"?"실거래 대기":"PAPER 모드");
+    box.className="badge "+(d.live_order_ready?"running":"stopped");
+    $("liveArm").disabled=!!d.live_armed;
+    $("liveDisarm").disabled=!d.live_armed;
+    $("liveAuto").disabled=!d.live_armed;
+    $("liveAuto").textContent=d.live_auto_enabled?"실거래 자동매매 OFF":"실거래 자동매매 ON";
+  }catch{}
+}
+$("liveArm").onclick=async()=>{
+  const phrase=prompt("Termux backend/.env의 LIVE_ARM_PHRASE를 입력하세요.");
+  if(!phrase)return;
+  try{const r=await api("/api/live/arm",{method:"POST",body:JSON.stringify({phrase})}),d=await r.json();if(!r.ok)throw Error(d.error||"실거래 ARM 실패");await liveStatus();alert("실거래 ARM 완료. 자동매매는 아직 OFF입니다.")}catch(e){alert(e.message)}
+};
+$("liveDisarm").onclick=async()=>{try{await api("/api/live/disarm",{method:"POST",body:"{}"});await liveStatus()}catch(e){alert(e.message)}};
+$("liveAuto").onclick=async()=>{
+  try{const st=await(await api("/api/live/status")).json();const r=await api("/api/live/auto",{method:"POST",body:JSON.stringify({enabled:!st.live_auto_enabled})}),d=await r.json();if(!r.ok)throw Error(d.error||"실거래 자동매매 설정 실패");await liveStatus()}catch(e){alert(e.message)}
+};
+liveStatus();setInterval(liveStatus,10000);
