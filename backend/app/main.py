@@ -9,7 +9,7 @@ from .strategy import Strategy
 import math
 from datetime import datetime, timedelta, timezone
 
-app = FastAPI(title="AI Auto Trader", version="0.3.0")
+app = FastAPI(title="AI Auto Trader", version="0.4.0")
 origins = [x.strip() for x in settings.allowed_origins.split(",") if x.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["*"], allow_headers=["*"])
 
@@ -43,15 +43,7 @@ def demo_candles(symbol: str, count: int = 120):
         open_price = close - math.sin(i * 1.7) * 180
         high = max(open_price, close) + 220
         low = min(open_price, close) - 220
-        candles.append({
-            "timestamp": t.isoformat(),
-            "openPrice": round(open_price),
-            "highPrice": round(high),
-            "lowPrice": round(low),
-            "closePrice": round(close),
-            "volume": int(100000 + abs(math.sin(i / 5)) * 180000),
-            "currency": "KRW",
-        })
+        candles.append({"timestamp": t.isoformat(), "openPrice": round(open_price), "highPrice": round(high), "lowPrice": round(low), "closePrice": round(close), "volume": int(100000 + abs(math.sin(i / 5)) * 180000), "currency": "KRW"})
     return candles
 
 @app.get("/health")
@@ -79,7 +71,9 @@ async def toggle(req: ToggleRequest):
 
 @app.get("/api/paper/portfolio")
 async def paper_portfolio():
-    return paper.snapshot()
+    symbols = list(paper.positions.keys())
+    prices = {s: demo_candles(s, 1)[0]["closePrice"] for s in symbols}
+    return paper.snapshot(prices)
 
 @app.post("/api/paper/order")
 async def paper_order(order: PaperOrder):
@@ -112,8 +106,31 @@ async def paper_market(symbol: str):
 
 @app.get("/api/paper/signal/{symbol}")
 async def paper_signal(symbol: str):
-    signal = strategy.evaluate(symbol, demo_candles(symbol))
-    return signal.__dict__
+    return strategy.evaluate(symbol, demo_candles(symbol)).__dict__
+
+@app.get("/api/paper/backtest/{symbol}")
+async def paper_backtest(symbol: str):
+    candles = demo_candles(symbol, 120)
+    cash = 1_000_000.0
+    shares = 0
+    trades = []
+    for i in range(20, len(candles)):
+        window = candles[i-19:i+1]
+        signal = strategy.evaluate(symbol, window)
+        price = float(candles[i]["closePrice"])
+        if signal.action == "BUY" and shares == 0:
+            qty = int(cash // price)
+            if qty:
+                cash -= qty * price
+                shares = qty
+                trades.append({"side": "BUY", "price": price, "quantity": qty, "timestamp": candles[i]["timestamp"]})
+        elif signal.action == "SELL" and shares > 0:
+            cash += shares * price
+            trades.append({"side": "SELL", "price": price, "quantity": shares, "timestamp": candles[i]["timestamp"]})
+            shares = 0
+    final_price = float(candles[-1]["closePrice"])
+    equity = cash + shares * final_price
+    return {"symbol": symbol, "initial_cash": 1_000_000, "final_equity": equity, "pnl": equity - 1_000_000, "return_pct": (equity / 1_000_000 - 1) * 100, "trades": trades}
 
 @app.post("/api/order/check")
 async def order_check(notional_krw: int):
