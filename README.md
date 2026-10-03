@@ -88,3 +88,46 @@ bash termux_stop.sh
 기본 설정은 PAPER 모드이며 실제 주문은 비활성화되어 있습니다.
 
 > 참고: 휴대폰에서 서버를 실행하는 것과 GitHub Pages가 인터넷을 통해 휴대폰 서버에 접근할 수 있게 만드는 것은 별개의 문제입니다. 외부 접근이 필요하면 다음 단계에서 터널/네트워크 구성을 추가합니다.
+
+
+## 휴대폰 Termux 서버 (간단 버전)
+
+Termux에서는 FastAPI 백엔드와 별도로 `termux_server/`를 사용합니다. Python 표준 라이브러리만 사용하므로 Pydantic/Rust 빌드가 필요 없습니다.
+
+최초 1회:
+```bash
+git pull
+bash termux_setup.sh
+```
+
+서버 실행:
+```bash
+bash termux_start.sh
+```
+
+백그라운드 실행:
+```bash
+bash termux_background.sh
+```
+
+상태 확인:
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Toss 현재가:
+```bash
+curl http://127.0.0.1:8000/api/price/005930
+```
+
+서버 로그:
+```bash
+tail -f logs/server.log
+```
+
+종료:
+```bash
+bash termux_stop.sh
+```
+
+Termux 서버의 기본 모드는 PAPER이며 실제 주문 API는 별도로 활성화하지 않습니다.
