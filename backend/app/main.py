@@ -182,6 +182,8 @@ async def live_order(order: LiveOrder, x_live_confirm: str | None = Header(defau
             order_type=order_type,
         )
         return {"ok": True, "mode": "live", "order": result}
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
