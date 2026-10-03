@@ -42,3 +42,6 @@ MAX_DAILY_LOSS_KRW=50000
 6. 마지막에만 live trading 활성화
 
 > GitHub Pages는 관제 UI만 담당합니다. API Secret과 실제 주문 실행은 백엔드 서버에서 담당합니다.
+
+
+<!-- deployment note -->
