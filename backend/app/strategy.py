@@ -12,12 +12,15 @@ class Signal:
 
 
 def closes_from(candles: list[dict]) -> list[float]:
-    values = []
-    for c in candles:
-        value = c.get("closePrice", c.get("close"))
-        if value is not None:
-            values.append(float(value))
-    return values
+    rows = []
+    for candle in candles:
+        value = candle.get("closePrice", candle.get("close"))
+        if value is None:
+            continue
+        timestamp = candle.get("timestamp", "")
+        rows.append((str(timestamp), float(value)))
+    rows.sort(key=lambda item: item[0])
+    return [value for _, value in rows]
 
 
 def sma(values: list[float], period: int) -> float | None:
