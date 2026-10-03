@@ -1,15 +1,30 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b0f16"><title>AI Auto Trader</title><link rel="stylesheet" href="./style.css"></head>
+<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b0f16"><title>AI Auto Trader · LIVE</title><link rel="stylesheet" href="./style.css"></head>
 <body><main class="app">
-<header><div><span class="eyebrow">TERMUX × TOSS OPEN API</span><h1>AI Auto Trader</h1><p class="muted">휴대폰에서 실행되는 자동매매 관제센터</p></div><span id="status" class="badge stopped">OFFLINE</span></header>
-<section class="hero card"><div><span class="muted">자동매매 엔진</span><strong id="state">연결 확인 중</strong><small id="serverText">API 서버 확인 중</small></div><div class="actions"><button id="toggle">엔진 시작</button><button id="autoToggle" class="secondary">자동매매 OFF</button></div></section>
-<section class="grid"><article class="card"><span>평가금</span><strong id="equity">-</strong></article><article class="card"><span>손익</span><strong id="pnl">-</strong></article><article class="card"><span>현금</span><strong id="cash">-</strong></article><article class="card"><span>전략 신호</span><strong id="signal">-</strong></article></section>
-<section class="card"><div class="section-head"><div><span class="muted"><input id="symbol" class="symbol" value="005930" maxlength="12"></span><h2 id="stockName">삼성전자</h2></div><div><span id="source" class="badge">LIVE</span><strong id="livePrice" class="price">-</strong></div></div><div class="indicators"><span>SMA5 <b id="sma5">-</b></span><span>SMA20 <b id="sma20">-</b></span><span>RSI14 <b id="rsi14">-</b></span></div><canvas id="chart" height="300"></canvas></section>
-<section class="grid two"><article class="card"><h2>자동매매 설정</h2><label>종목<input id="autoSymbol" value="005930"></label><div class="selectrow"><button data-interval="1m" class="interval active">1분봉</button><button data-interval="1d" class="interval secondary">일봉</button></div><label>1회 주문금액<input id="autoBudget" type="number" min="1000" step="1000" value="50000"></label><button id="saveAuto">설정 저장</button><p class="muted">SMA5/SMA20 + RSI14 전략이며 현재 자동 주문은 PAPER 모드에서만 동작합니다.</p></article>
-<article class="card"><h2>수동 Paper 주문</h2><label>가격<input id="orderPrice" type="number"></label><label>수량<input id="orderQty" type="number" min="1" value="1"></label><div class="actions"><button id="buy">가상 매수</button><button id="sell" class="secondary">가상 매도</button></div><button id="reset" class="danger">가상계좌 초기화</button></article></section>
-<section class="grid two"><article class="card"><h2>실시간 호가</h2><div id="orderbook" class="book">조회 중...</div></article><article class="card"><h2>보유 종목</h2><div id="holdings" class="trades">보유 종목 없음</div></article></section>
-<section class="card"><div class="section-head"><h2>백테스트</h2><button id="backtest" class="secondary">실행</button></div><div class="grid"><article><span>초기금액</span><strong id="btInitial">-</strong></article><article><span>최종금액</span><strong id="btFinal">-</strong></article><article><span>손익</span><strong id="btPnl">-</strong></article><article><span>수익률</span><strong id="btReturn">-</strong></article></div><p id="btTrades" class="muted">-</p></section>
-<section class="card"><div class="section-head"><h2>실거래</h2><span id="liveState" class="badge stopped">PAPER 모드</span></div><p class="muted">실거래는 기본 비활성화이며, Termux에서 LIVE_TRADING_ENABLED=true로 설정한 뒤 ARM 문구를 입력해야 활성화됩니다. ARM 후에도 자동매매는 별도로 켜야 합니다.</p><div class="actions"><button id="liveArm" class="danger">실거래 ARM</button><button id="liveDisarm" class="secondary">실거래 해제</button><button id="liveAuto" class="secondary" disabled>실거래 자동매매 ON</button></div></section>
+<header><div><span class="eyebrow">TERMUX × TOSS OPEN API</span><h1>AI Auto Trader</h1><p class="muted">실계좌 기반 자동매매 관제센터</p></div><span id="status" class="badge stopped">OFFLINE</span></header>
+
+<section class="hero card"><div><span class="muted">실거래 엔진</span><strong id="engineState">연결 확인 중</strong><small id="serverText">API 서버 확인 중</small></div><div class="actions"><button id="engineToggle">실거래 엔진 시작</button></div></section>
+
+<section class="grid"><article class="card"><span>계좌 평가금</span><strong id="equity">-</strong></article><article class="card"><span>손익</span><strong id="pnl">-</strong></article><article class="card"><span>매수 가능금액</span><strong id="cash">-</strong></article><article class="card"><span>일일 손실</span><strong id="risk">-</strong></article></section>
+
+<section class="card"><div class="section-head"><div><span class="muted"><input id="symbol" class="symbol" value="005930" maxlength="20"></span><h2>종목 시세</h2></div><div><span id="source" class="badge">-</span><strong id="livePrice" class="price">-</strong></div></div><div class="indicators"><span>SMA5 <b id="sma5">-</b></span><span>SMA20 <b id="sma20">-</b></span><span>RSI14 <b id="rsi14">-</b></span><span>전략 <b id="signal">-</b></span></div><div class="selectrow"><button data-interval="1m" class="interval active">1분봉</button><button data-interval="1d" class="interval secondary">일봉</button></div><canvas id="chart" height="300"></canvas></section>
+
+<section class="grid two"><article class="card"><h2>실거래 주문</h2>
+<label>주문 방향<select id="orderSide"><option value="BUY">매수</option><option value="SELL">매도</option></select></label>
+<label>호가 유형<select id="orderType"><option value="MARKET">시장가</option><option value="LIMIT">지정가</option></select></label>
+<label>가격<input id="orderPrice" type="number" min="1"></label>
+<label>수량<input id="orderQty" type="number" min="1" step="1" value="1"></label>
+<label class="check"><input id="confirmOrder" type="checkbox"> 실제 계좌 주문임을 확인했습니다.</label>
+<button id="placeOrder" class="danger">실거래 주문 제출</button>
+<p class="muted">ARM 상태, 일일 손실 한도, 매수 가능금액/매도 가능수량, 주문금액 제한을 서버에서 주문 직전에 다시 검사합니다.</p>
+</article>
+
+<article class="card"><h2>실거래 안전장치</h2><div class="actions"><button id="liveArm" class="danger">실거래 ARM</button><button id="liveDisarm" class="secondary">ARM 해제</button><button id="liveAuto" class="secondary">실거래 자동매매 ON</button></div><p class="muted">ARM과 자동매매 ON은 별도 단계입니다. 엔진이 중지되면 자동매매도 정지됩니다.</p><div class="statline"><span>최근 주문</span><b id="lastOrder">-</b></div></article></section>
+
+<section class="grid two"><article class="card"><h2>실시간 호가</h2><div id="orderbook" class="book">조회 중...</div></article><article class="card"><h2>보유 종목</h2><div id="holdings" class="trades">조회 중...</div></article></section>
+
+<section class="card"><h2>미체결 주문</h2><div id="orders" class="trades">조회 중...</div></section>
+
 <section class="card"><h2>서버 연결</h2><label>API 서버 주소<input id="apiBase" placeholder="https://your-tunnel.example.com"></label><label>관제 토큰<input id="controlToken" type="password" placeholder="Termux의 .control_token 값"></label><div class="actions"><button id="saveConnection">연결 저장</button><button id="test" class="secondary">연결 테스트</button></div><div id="connection" class="connection">-</div></section>
-<section class="card"><div class="section-head"><h2>거래 기록</h2><span class="badge">PAPER</span></div><div id="trades" class="trades">거래 없음</div></section>
-<footer>AI Auto Trader · PAPER FIRST · Live order is intentionally disabled</footer></main><script src="./app.js"></script></body></html>
+
+<footer>AI Auto Trader · LIVE ONLY · 주문은 Toss Securities Open API를 통해 실제 계좌에 제출됩니다.</footer></main><script src="./app.js"></script></body></html>
