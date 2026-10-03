@@ -7,35 +7,58 @@
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
-  <main class="app">
-    <header>
-      <div><span class="eyebrow">TOSS SECURITIES</span><h1>AI Auto Trader</h1></div>
-      <span id="status" class="badge stopped">STOPPED</span>
-    </header>
+<main class="app">
+  <header>
+    <div><span class="eyebrow">PAPER TRADING TERMINAL</span><h1>AI Auto Trader</h1></div>
+    <span id="status" class="badge stopped">STOPPED</span>
+  </header>
 
-    <section class="hero card">
-      <div><p class="muted">자동매매 상태</p><strong id="state">중지됨</strong></div>
-      <button id="toggle">자동매매 시작</button>
-    </section>
+  <section class="hero card">
+    <div><p class="muted">자동매매 엔진</p><strong id="state">중지됨</strong></div>
+    <button id="toggle">자동매매 시작</button>
+  </section>
 
-    <section class="grid">
-      <article class="card"><span>삼성전자 현재가</span><strong id="price">-</strong></article>
-      <article class="card"><span>보유 종목</span><strong id="holdings">-</strong></article>
-      <article class="card"><span>서버</span><strong id="server">확인 중</strong></article>
-    </section>
+  <section class="grid">
+    <article class="card"><span>가상 평가금</span><strong id="equity">₩10,000,000</strong></article>
+    <article class="card"><span>가상 손익</span><strong id="pnl">₩0</strong></article>
+    <article class="card"><span>현금</span><strong id="cash">₩10,000,000</strong></article>
+    <article class="card"><span>전략 신호</span><strong id="signal">HOLD</strong></article>
+  </section>
 
-    <section class="card">
-      <h2>시스템 안전 상태</h2>
+  <section class="card">
+    <div class="section-head">
+      <div><span class="muted">005930 · 삼성전자</span><h2>Paper Market</h2></div>
+      <span id="source" class="badge">PAPER DEMO</span>
+    </div>
+    <canvas id="chart" height="280"></canvas>
+  </section>
+
+  <section class="grid two">
+    <article class="card">
+      <h2>Paper 주문</h2>
+      <label>가격<input id="orderPrice" type="number" value="72000"></label>
+      <label>수량<input id="orderQty" type="number" min="1" value="1"></label>
+      <div class="actions"><button id="buy">가상 매수</button><button id="sell" class="secondary">가상 매도</button></div>
+      <button id="reset" class="danger">가상계좌 초기화</button>
+    </article>
+    <article class="card">
+      <h2>리스크</h2>
       <ul>
-        <li>기본 실행 모드: <b>PAPER</b></li>
-        <li>실전 주문: 기본 차단</li>
-        <li>API Secret: 브라우저에 저장하지 않음</li>
-        <li>주문 한도 / 일일 손실 한도 적용</li>
+        <li>최대 주문금액: ₩100,000</li>
+        <li>일일 손실한도: ₩50,000</li>
+        <li>실전 주문: 차단</li>
+        <li>Toss 연결 없이 Paper 기능 사용 가능</li>
       </ul>
-    </section>
+    </article>
+  </section>
 
-    <footer>AI Auto Trader · experimental</footer>
-  </main>
+  <section class="card">
+    <div class="section-head"><h2>거래 기록</h2><span id="server" class="badge">SERVER</span></div>
+    <div id="trades" class="trades">거래 없음</div>
+  </section>
+
+  <footer>AI Auto Trader · paper development build</footer>
+</main>
 <script src="./app.js"></script>
 </body>
 </html>
