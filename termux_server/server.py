@@ -180,21 +180,70 @@ def _find_value(v,names):
         if k in wanted:return n
     return None
 
+def _holding_rows(v):
+    if isinstance(v,dict):
+        for k,x in v.items():
+            if k.lower() in ("holdings","items","assets","positions") and isinstance(x,list):
+                for row in x:
+                    if isinstance(row,dict): yield row
+            yield from _holding_rows(x)
+    elif isinstance(v,list):
+        for x in v:
+            yield from _holding_rows(x)
+
 def live_equity_snapshot():
     live_guard()
     h=toss("GET","/api/v1/holdings",account=True)
     bp=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
-    total=_find_value(h,{"totalEvaluationAmount","totalMarketValue","totalAssetValue","evaluationAmount","assetValue","totalAmount"})
+
+    # Toss's current buying-power schema uses cashBuyingPower for the cash amount.
+    # Holdings may expose an aggregate market/evaluation value, or only per-position
+    # quantity/price/value fields, so support both forms.
+    total=_find_value(h,{
+        "totalEvaluationAmount","totalEvaluationValue","totalEvaluation",
+        "totalMarketValue","totalAssetValue","totalAssetEvaluationAmount",
+        "evaluationAmount","evaluationValue","assetValue","totalValue",
+        "totalEquity","equity"
+    })
+
+    cash=_find_value(bp,{
+        "cashBuyingPower","buyingPower","availableAmount","availableCash",
+        "cash","orderableAmount"
+    })
+
     if total is None:
-        cash=_find_value(bp,{"buyingPower","availableAmount","availableCash","cash","orderableAmount"})
-        rows=(h.get("result",{}).get("holdings",[]) if isinstance(h,dict) else [])
+        rows=list(_holding_rows(h))
         mv=0.0
+        seen=set()
         for row in rows:
-            q=_find_value(row,{"quantity","holdingQuantity","sellableQuantity"})
-            p=_find_value(row,{"currentPrice","lastPrice","evaluationPrice","marketPrice"})
-            if q is not None and p is not None: mv+=q*p
-        if cash is not None: total=cash+mv
-    if total is None: raise RuntimeError("live equity value unavailable; live trading halted")
+            marker=id(row)
+            if marker in seen: continue
+            seen.add(marker)
+
+            direct=_find_value(row,{
+                "marketValue","evaluationAmount","evaluationValue",
+                "evaluationPriceAmount","holdingValue","assetValue"
+            })
+            if direct is not None:
+                mv += direct
+                continue
+
+            q=_find_value(row,{
+                "quantity","holdingQuantity","sellableQuantity",
+                "availableQuantity","balanceQuantity"
+            })
+            p=_find_value(row,{
+                "currentPrice","lastPrice","evaluationPrice",
+                "marketPrice","price"
+            })
+            if q is not None and p is not None:
+                mv += q*p
+
+        if cash is not None:
+            total=cash+mv
+
+    if total is None:
+        raise RuntimeError("live equity value unavailable; Toss holdings/buying-power response contains no usable equity fields")
     return {"equity":float(total),"holdings":h,"buying_power":bp}
 
 def live_daily_risk_check():
