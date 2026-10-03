@@ -34,12 +34,14 @@ if not CONTROL_TOKEN:
 def defaults():
     return {"paper_cash":10000000.0,"positions":{},"trades":[],"next_trade_id":1,"trading_enabled":False,
             "auto_enabled":False,"auto_symbol":"005930","auto_interval":"1m","auto_order_krw":50000.0,
-            "last_auto_candle":"","last_auto_action":"HOLD","last_auto_reason":"","last_error":"","live_armed":False,"live_auto_enabled":False,"live_last_order_id":""}
+            "last_auto_candle":"","paper_last_auto_candle":"","live_last_auto_candle":"","last_auto_action":"HOLD","last_auto_reason":"","last_error":"","live_armed":False,"live_auto_enabled":False,"live_last_order_id":"","live_risk_date":"","live_risk_baseline":None,"live_daily_loss":0.0,"live_halted":False}
 def load_state():
     try:
         d=json.load(open(STATE_FILE,encoding="utf-8")); s=defaults(); s.update(d); return s
     except Exception: return defaults()
 STATE=load_state(); LOCK=threading.RLock()
+STATE["live_armed"]=False; STATE["live_auto_enabled"]=False; STATE["live_halted"]=False
+save()
 def save():
     with LOCK:
         tmp=STATE_FILE+".tmp"; json.dump(STATE,open(tmp,"w",encoding="utf-8"),ensure_ascii=False,indent=2); os.replace(tmp,STATE_FILE)
@@ -58,22 +60,35 @@ def find_account(v):
     return None
 def toss(method,path,params=None,body=None,account=False):
     global TOKEN,TOKEN_UNTIL
-    if not TOKEN or time.time()>TOKEN_UNTIL-30:
-        if not CLIENT_ID or not CLIENT_SECRET: raise RuntimeError("Toss credentials are not configured")
-        data=urlencode({"grant_type":"client_credentials","client_id":CLIENT_ID,"client_secret":CLIENT_SECRET}).encode()
-        req=Request(BASE+"/oauth2/token",data=data,headers={"Content-Type":"application/x-www-form-urlencoded"},method="POST")
-        with urlopen(req,timeout=10) as r: d=json.loads(r.read())
-        TOKEN=d["access_token"]; TOKEN_UNTIL=time.time()+int(d.get("expires_in",86400))
-    url=BASE+path+("?" + urlencode(params) if params else ""); h={"Authorization":"Bearer "+TOKEN}
-    if account: h["X-Tossinvest-Account"]=ACCOUNT_SEQ or find_account(toss("GET","/api/v1/accounts"))
-    data=json.dumps(body).encode() if body is not None else None
-    if body is not None:h["Content-Type"]="application/json"
-    try:
-        with urlopen(Request(url,data=data,headers=h,method=method),timeout=10) as r:return json.loads(r.read())
-    except HTTPError as e:
-        raw=e.read().decode(errors="replace")
-        if e.code==401:TOKEN=None
-        raise RuntimeError(f"Toss API {e.code}: {raw[:500]}")
+    for attempt in range(4):
+        if not TOKEN or time.time()>TOKEN_UNTIL-30:
+            if not CLIENT_ID or not CLIENT_SECRET: raise RuntimeError("Toss credentials are not configured")
+            data=urlencode({"grant_type":"client_credentials","client_id":CLIENT_ID,"client_secret":CLIENT_SECRET}).encode()
+            req=Request(BASE+"/oauth2/token",data=data,headers={"Content-Type":"application/x-www-form-urlencoded"},method="POST")
+            with urlopen(req,timeout=10) as r: d=json.loads(r.read())
+            TOKEN=d["access_token"]; TOKEN_UNTIL=time.time()+int(d.get("expires_in",86400))
+        acct=ACCOUNT_SEQ
+        if account and not acct:
+            acct=find_account(toss("GET","/api/v1/accounts"))
+            if not acct: raise RuntimeError("No active Toss account found")
+        url=BASE+path+("?" + urlencode(params) if params else "")
+        h={"Authorization":"Bearer "+TOKEN}
+        if account: h["X-Tossinvest-Account"]=acct
+        data=json.dumps(body).encode() if body is not None else None
+        if body is not None:h["Content-Type"]="application/json"
+        try:
+            with urlopen(Request(url,data=data,headers=h,method=method),timeout=10) as r:return json.loads(r.read())
+        except HTTPError as e:
+            raw=e.read().decode(errors="replace")
+            if e.code==401:
+                TOKEN=None
+                if attempt<3: continue
+            if e.code==429:
+                retry=float(e.headers.get("Retry-After","0") or 0)
+                time.sleep(max(retry,2**attempt)+secrets.randbelow(250)/1000)
+                continue
+            raise RuntimeError(f"Toss API {e.code}: {raw[:500]}")
+    raise RuntimeError("Toss API rate limit retry exhausted")
 
 def candles_of(d):
     return (d.get("result",{}).get("candles",[]) if isinstance(d,dict) else [])
@@ -139,6 +154,51 @@ def portfolio():
 def authorized(h):
     return secrets.compare_digest(h.headers.get("X-Control-Token",""),CONTROL_TOKEN)
 
+def _numbers(v):
+    if isinstance(v,dict):
+        for k,x in v.items():
+            if isinstance(x,(int,float)) and not isinstance(x,bool): yield k.lower(),float(x)
+            yield from _numbers(x)
+    elif isinstance(v,list):
+        for x in v: yield from _numbers(x)
+
+def _find_value(v,names):
+    wanted={x.lower() for x in names}
+    for k,n in _numbers(v):
+        if k in wanted:return n
+    return None
+
+def live_equity_snapshot():
+    live_guard()
+    h=toss("GET","/api/v1/holdings",account=True)
+    bp=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
+    total=_find_value(h,{"totalEvaluationAmount","totalMarketValue","totalAssetValue","evaluationAmount","assetValue","totalAmount"})
+    if total is None:
+        cash=_find_value(bp,{"buyingPower","availableAmount","availableCash","cash","orderableAmount"})
+        rows=(h.get("result",{}).get("holdings",[]) if isinstance(h,dict) else [])
+        mv=0.0
+        for row in rows:
+            q=_find_value(row,{"quantity","holdingQuantity","sellableQuantity"})
+            p=_find_value(row,{"currentPrice","lastPrice","evaluationPrice","marketPrice"})
+            if q is not None and p is not None: mv+=q*p
+        if cash is not None: total=cash+mv
+    if total is None: raise RuntimeError("live equity value unavailable; live trading halted")
+    return {"equity":float(total),"holdings":h,"buying_power":bp}
+
+def live_daily_risk_check():
+    snap=live_equity_snapshot()
+    today=datetime.now(timezone.utc).date().isoformat()
+    with LOCK:
+        if STATE.get("live_risk_date")!=today or STATE.get("live_risk_baseline") is None:
+            STATE["live_risk_date"]=today; STATE["live_risk_baseline"]=snap["equity"]; STATE["live_daily_loss"]=0.0; STATE["live_halted"]=False
+        loss=max(0.0,float(STATE["live_risk_baseline"])-snap["equity"])
+        STATE["live_daily_loss"]=loss
+        if loss>=MAX_DAILY_LOSS:
+            STATE["live_halted"]=True; STATE["live_auto_enabled"]=False; save()
+            raise RuntimeError(f"daily loss limit reached: {loss:,.0f} KRW")
+        save()
+    return snap
+
 def live_guard():
     if MODE!="live": raise RuntimeError("TRADING_MODE=live is required")
     if not LIVE_TRADING_ENABLED: raise RuntimeError("LIVE_TRADING_ENABLED=false")
@@ -151,6 +211,7 @@ def live_guard():
 
 def live_order(symbol,side,quantity,order_type="MARKET",price=None):
     live_guard()
+    live_daily_risk_check()
     symbol=str(symbol).upper(); side=str(side).upper(); order_type=str(order_type).upper()
     qty=int(quantity)
     if side not in ("BUY","SELL") or qty<=0: raise ValueError("invalid live order")
@@ -185,8 +246,9 @@ def live_auto_loop():
             with LOCK:
                 active=STATE.get("live_armed",False) and STATE.get("live_auto_enabled",False) and STATE.get("trading_enabled",False)
                 sym=STATE.get("auto_symbol","005930"); iv=STATE.get("auto_interval","1m")
-                budget=float(STATE.get("auto_order_krw",50000)); last=STATE.get("last_auto_candle","")
+                budget=float(STATE.get("auto_order_krw",50000)); last=STATE.get("live_last_auto_candle","")
             if active and MODE=="live" and LIVE_TRADING_ENABLED:
+                live_daily_risk_check()
                 m=market(sym,iv); cs=m["candles"]; cid=cs[-1].get("timestamp","")
                 if cid and cid!=last:
                     if m.get("source")!="TOSS_LIVE":
@@ -203,7 +265,7 @@ def live_auto_loop():
                                 n=int(float(row.get("quantity",row.get("holdingQuantity",0)) or 0)); break
                         if n: live_order(sym,"SELL",n,"MARKET")
                     with LOCK:
-                        STATE["last_auto_candle"]=cid;STATE["last_auto_action"]=sig["action"];STATE["last_auto_reason"]=sig["reason"];save()
+                        STATE["live_last_auto_candle"]=cid;STATE["last_auto_action"]=sig["action"];STATE["last_auto_reason"]=sig["reason"];save()
         except Exception as e:
             with LOCK: STATE["last_error"]=str(e); save()
         time.sleep(20)
@@ -211,7 +273,7 @@ def live_auto_loop():
 def auto_loop():
     while True:
         try:
-            with LOCK:a=STATE["auto_enabled"] and STATE["trading_enabled"] and MODE=="paper";sym=STATE["auto_symbol"];iv=STATE["auto_interval"];budget=STATE["auto_order_krw"];last=STATE["last_auto_candle"]
+            with LOCK:a=STATE["auto_enabled"] and STATE["trading_enabled"] and MODE=="paper";sym=STATE["auto_symbol"];iv=STATE["auto_interval"];budget=STATE["auto_order_krw"];last=STATE["paper_last_auto_candle"]
             if a:
                 m=market(sym,iv);cs=m["candles"];cid=cs[-1].get("timestamp","")
                 if cid and cid!=last:
@@ -221,7 +283,7 @@ def auto_loop():
                         n=int(min(budget,MAX_ORDER)//p)
                         if n:paper_order(sym,"BUY",n,p)
                     elif sig["action"]=="SELL" and q:paper_order(sym,"SELL",q,p)
-                    with LOCK:STATE["last_auto_candle"]=cid;STATE["last_auto_action"]=sig["action"];STATE["last_auto_reason"]=sig["reason"];STATE["last_error"]="";save()
+                    with LOCK:STATE["paper_last_auto_candle"]=cid;STATE["last_auto_action"]=sig["action"];STATE["last_auto_reason"]=sig["reason"];STATE["last_error"]="";save()
         except Exception as e:
             with LOCK:STATE["last_error"]=str(e);save()
         time.sleep(20)
@@ -229,7 +291,9 @@ def auto_loop():
 class Handler(BaseHTTPRequestHandler):
     def send_json(self,v,status=200):
         raw=json.dumps(v,ensure_ascii=False).encode();o=self.headers.get("Origin","");self.send_response(status);self.send_header("Content-Type","application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin",o if o in ORIGINS else "*");self.send_header("Access-Control-Allow-Headers","Content-Type,X-Control-Token");self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS");self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(raw)));self.end_headers();self.wfile.write(raw)
+        if o and o not in ORIGINS:
+            self.send_response(403); self.end_headers(); return
+        self.send_header("Access-Control-Allow-Origin",o if o in ORIGINS else (ORIGINS[0] if ORIGINS else "null"));self.send_header("Access-Control-Allow-Headers","Content-Type,X-Control-Token");self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS");self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(raw)));self.end_headers();self.wfile.write(raw)
     def body(self):
         return json.loads(self.rfile.read(int(self.headers.get("Content-Length","0"))) or b"{}")
     def guard(self):
