@@ -45,3 +45,46 @@ MAX_DAILY_LOSS_KRW=50000
 
 
 <!-- deployment note -->
+
+## Termux 휴대폰 서버
+
+휴대폰에서 Termux를 서버로 사용할 수 있습니다.
+
+### 최초 1회 설치
+
+```bash
+git clone https://github.com/heh-heh/ai-auto-trad.git
+cd ai-auto-trad
+bash termux_setup.sh
+```
+
+설치 후 `backend/.env`에 Toss 환경변수를 휴대폰에서 직접 설정합니다. API Secret은 GitHub에 올리지 않습니다.
+
+### 서버 실행
+
+```bash
+cd ai-auto-trad
+bash termux_run.sh
+```
+
+서버 확인:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+브라우저에서 확인:
+
+```
+http://127.0.0.1:8000/docs
+```
+
+서버 종료:
+
+```bash
+bash termux_stop.sh
+```
+
+기본 설정은 PAPER 모드이며 실제 주문은 비활성화되어 있습니다.
+
+> 참고: 휴대폰에서 서버를 실행하는 것과 GitHub Pages가 인터넷을 통해 휴대폰 서버에 접근할 수 있게 만드는 것은 별개의 문제입니다. 외부 접근이 필요하면 다음 단계에서 터널/네트워크 구성을 추가합니다.
