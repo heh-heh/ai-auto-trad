@@ -96,6 +96,35 @@ async def live_account():
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
+@app.get("/api/live/buying-power")
+async def live_buying_power(currency: str = "KRW"):
+    if settings.trading_mode.lower() != "live":
+        raise HTTPException(status_code=403, detail="TRADING_MODE is not live")
+    try:
+        return await toss.buying_power(currency)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.get("/api/live/sellable/{symbol}")
+async def live_sellable(symbol: str):
+    if settings.trading_mode.lower() != "live":
+        raise HTTPException(status_code=403, detail="TRADING_MODE is not live")
+    try:
+        return await toss.sellable_quantity(symbol)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+@app.get("/api/live/orderbook/{symbol}")
+async def live_orderbook(symbol: str):
+    if settings.trading_mode.lower() != "live":
+        raise HTTPException(status_code=403, detail="TRADING_MODE is not live")
+    try:
+        return await toss.orderbook(symbol)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
 @app.get("/api/live/orders")
 async def live_orders(status: str = "OPEN"):
     if settings.trading_mode.lower() != "live":
