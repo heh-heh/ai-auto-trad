@@ -40,6 +40,7 @@ def load_state():
         d=json.load(open(STATE_FILE,encoding="utf-8")); s=defaults(); s.update(d); return s
     except Exception: return defaults()
 STATE=load_state(); LOCK=threading.RLock()
+if STATE.get("auto_symbol")=="005930": STATE["auto_symbol"]="AAPL"; STATE["auto_order_usd"]=50.0
 def save():
     with LOCK:
         tmp=STATE_FILE+".tmp"; json.dump(STATE,open(tmp,"w",encoding="utf-8"),ensure_ascii=False,indent=2); os.replace(tmp,STATE_FILE)
