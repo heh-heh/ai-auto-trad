@@ -6,6 +6,8 @@ from .toss import TossClient
 from .risk import validate_order
 from .paper import PaperBroker
 from .strategy import Strategy
+import math
+from datetime import datetime, timedelta, timezone
 
 app = FastAPI(title="AI Auto Trader", version="0.3.0")
 origins = [x.strip() for x in settings.allowed_origins.split(",") if x.strip()]
@@ -28,6 +30,29 @@ class PaperOrder(BaseModel):
 class PriceUpdate(BaseModel):
     symbol: str = Field(min_length=1, max_length=20)
     price: float = Field(gt=0)
+
+def demo_candles(symbol: str, count: int = 120):
+    base = 72000 if symbol == "005930" else 50000
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    candles = []
+    for i in range(count):
+        t = now - timedelta(minutes=(count - 1 - i))
+        drift = i * 18
+        wave = math.sin(i / 7) * 550 + math.sin(i / 17) * 300
+        close = base + drift + wave
+        open_price = close - math.sin(i * 1.7) * 180
+        high = max(open_price, close) + 220
+        low = min(open_price, close) - 220
+        candles.append({
+            "timestamp": t.isoformat(),
+            "openPrice": round(open_price),
+            "highPrice": round(high),
+            "lowPrice": round(low),
+            "closePrice": round(close),
+            "volume": int(100000 + abs(math.sin(i / 5)) * 180000),
+            "currency": "KRW",
+        })
+    return candles
 
 @app.get("/health")
 async def health():
@@ -79,14 +104,21 @@ async def paper_reset():
 async def paper_price(update: PriceUpdate):
     return {"ok": True, "portfolio": paper.snapshot({update.symbol: update.price})}
 
+@app.get("/api/paper/market/{symbol}")
+async def paper_market(symbol: str):
+    candles = demo_candles(symbol)
+    signal = strategy.evaluate(symbol, candles)
+    return {"symbol": symbol, "source": "PAPER_DEMO", "candles": candles, "signal": signal.__dict__}
+
+@app.get("/api/paper/signal/{symbol}")
+async def paper_signal(symbol: str):
+    signal = strategy.evaluate(symbol, demo_candles(symbol))
+    return signal.__dict__
+
 @app.post("/api/order/check")
 async def order_check(notional_krw: int):
     decision = validate_order(notional_krw)
     return {"allowed": decision.allowed, "reason": decision.reason}
-
-@app.get("/api/strategy/{symbol}")
-async def strategy_signal(symbol: str):
-    return strategy.evaluate(symbol, []).__dict__
 
 @app.get("/api/account")
 async def account():
