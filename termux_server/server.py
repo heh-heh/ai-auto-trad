@@ -18,7 +18,7 @@ def load_env(p):
             k,v=line.split("=",1); os.environ[k.strip()]=v.strip().strip('"').strip("'")
 load_env(ENV)
 CLIENT_ID=os.getenv("TOSS_CLIENT_ID",""); CLIENT_SECRET=os.getenv("TOSS_CLIENT_SECRET",""); ACCOUNT_SEQ=os.getenv("TOSS_ACCOUNT_SEQ","")
-MODE=os.getenv("TRADING_MODE","paper").lower(); MAX_ORDER=float(os.getenv("MAX_ORDER_KRW","100000")); MAX_DAILY_LOSS=float(os.getenv("MAX_DAILY_LOSS_KRW","50000"))
+MODE=os.getenv("TRADING_MODE","paper").lower(); MAX_ORDER=float(os.getenv("MAX_ORDER_KRW","100000")); MAX_ORDER_USD=float(os.getenv("MAX_ORDER_USD","100")); MAX_DAILY_LOSS=float(os.getenv("MAX_DAILY_LOSS_KRW","50000"))
 LIVE_TRADING_ENABLED=os.getenv("LIVE_TRADING_ENABLED","false").lower()=="true"
 LIVE_ARM_PHRASE=os.getenv("LIVE_ARM_PHRASE","").strip()
 ORIGINS=[x.strip() for x in os.getenv("ALLOWED_ORIGINS","https://heh-heh.github.io").split(",") if x.strip()]
@@ -33,7 +33,7 @@ if not CONTROL_TOKEN:
 
 def defaults():
     return {"paper_cash":10000000.0,"positions":{},"trades":[],"next_trade_id":1,"trading_enabled":False,
-            "auto_enabled":False,"auto_symbol":"005930","auto_interval":"1m","auto_order_krw":50000.0,
+            "auto_enabled":False,"auto_symbol":"AAPL","auto_interval":"1m","auto_order_krw":50000.0,"auto_order_usd":50.0,
             "last_auto_candle":"","paper_last_auto_candle":"","live_last_auto_candle":"","last_auto_action":"HOLD","last_auto_reason":"","last_error":"","live_armed":False,"live_auto_enabled":False,"live_last_order_id":"","live_risk_date":"","live_risk_baseline":None,"live_daily_loss":0.0,"live_halted":False}
 def load_state():
     try:
@@ -191,60 +191,44 @@ def _holding_rows(v):
         for x in v:
             yield from _holding_rows(x)
 
+_FX_CACHE={"rate":None,"until":0.0}
+
+def usd_krw_rate():
+    now=time.time()
+    if _FX_CACHE["rate"] is not None and now<_FX_CACHE["until"]: return float(_FX_CACHE["rate"])
+    d=toss("GET","/api/v1/exchange-rate",{"baseCurrency":"USD","quoteCurrency":"KRW"})
+    rate=_find_value(d,{"rate","midRate"})
+    if rate is None or rate<=0: raise RuntimeError("USD/KRW exchange rate unavailable")
+    _FX_CACHE["rate"]=float(rate); _FX_CACHE["until"]=now+60
+    return float(rate)
+
+def is_us_symbol(symbol): return not str(symbol).isdigit()
+
 def live_equity_snapshot():
     live_guard()
     h=toss("GET","/api/v1/holdings",account=True)
-    bp=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
-
-    # Toss's current buying-power schema uses cashBuyingPower for the cash amount.
-    # Holdings may expose an aggregate market/evaluation value, or only per-position
-    # quantity/price/value fields, so support both forms.
-    total=_find_value(h,{
-        "totalEvaluationAmount","totalEvaluationValue","totalEvaluation",
-        "totalMarketValue","totalAssetValue","totalAssetEvaluationAmount",
-        "evaluationAmount","evaluationValue","assetValue","totalValue",
-        "totalEquity","equity"
-    })
-
-    cash=_find_value(bp,{
-        "cashBuyingPower","buyingPower","availableAmount","availableCash",
-        "cash","orderableAmount"
-    })
-
-    if total is None:
-        rows=list(_holding_rows(h))
-        mv=0.0
-        seen=set()
-        for row in rows:
-            marker=id(row)
-            if marker in seen: continue
-            seen.add(marker)
-
-            direct=_find_value(row,{
-                "marketValue","evaluationAmount","evaluationValue",
-                "evaluationPriceAmount","holdingValue","assetValue"
-            })
-            if direct is not None:
-                mv += direct
-                continue
-
-            q=_find_value(row,{
-                "quantity","holdingQuantity","sellableQuantity",
-                "availableQuantity","balanceQuantity"
-            })
-            p=_find_value(row,{
-                "currentPrice","lastPrice","evaluationPrice",
-                "marketPrice","price"
-            })
-            if q is not None and p is not None:
-                mv += q*p
-
-        if cash is not None:
-            total=cash+mv
-
-    if total is None:
-        raise RuntimeError("live equity value unavailable; Toss holdings/buying-power response contains no usable equity fields")
-    return {"equity":float(total),"holdings":h,"buying_power":bp}
+    krw=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
+    usd=toss("GET","/api/v1/buying-power",{"currency":"USD"},account=True)
+    rows=list(_holding_rows(h)); seen=set(); holding_krw=0.0; holding_usd=0.0
+    for row in rows:
+        marker=id(row)
+        if marker in seen: continue
+        seen.add(marker)
+        value=_find_value(row,{"marketValue","evaluationAmount","evaluationValue","evaluationPriceAmount","holdingValue","assetValue"})
+        if value is None:
+            q=_find_value(row,{"quantity","holdingQuantity","sellableQuantity","availableQuantity","balanceQuantity"})
+            p=_find_value(row,{"currentPrice","lastPrice","evaluationPrice","marketPrice","price"})
+            if q is not None and p is not None: value=q*p
+        if value is None: continue
+        sym=str(row.get("symbol",row.get("stockCode",""))) if isinstance(row,dict) else ""
+        cur=str(row.get("currency","")).upper() if isinstance(row,dict) else ""
+        if cur not in ("KRW","USD"): cur="USD" if is_us_symbol(sym) else "KRW"
+        if cur=="USD": holding_usd+=float(value)
+        else: holding_krw+=float(value)
+    krw_cash=_buying_power_value(krw) or 0.0; usd_cash=_buying_power_value(usd) or 0.0
+    rate=usd_krw_rate(); equity_krw=krw_cash+holding_krw+(usd_cash+holding_usd)*rate
+    if equity_krw<=0: raise RuntimeError("live equity value unavailable; KRW/USD cash and holdings contain no usable value")
+    return {"equity":float(equity_krw),"equity_krw":float(equity_krw),"krw_cash":float(krw_cash),"usd_cash":float(usd_cash),"holding_krw":float(holding_krw),"holding_usd":float(holding_usd),"usd_krw_rate":float(rate),"holdings":h,"buying_power":{"KRW":krw,"USD":usd}}
 
 def live_daily_risk_check():
     snap=live_equity_snapshot()
@@ -278,34 +262,44 @@ def _buying_power_value(v):
 def _sellable_value(v):
     return _find_value(v,{"quantity","sellableQuantity","availableQuantity","orderableQuantity"})
 
-def live_order(symbol,side,quantity,order_type="MARKET",price=None):
-    live_guard()
-    live_daily_risk_check()
-    symbol=str(symbol).upper(); side=str(side).upper(); order_type=str(order_type).upper()
-    qty=int(quantity)
-    if side not in ("BUY","SELL") or qty<=0: raise ValueError("invalid live order")
+def live_order(symbol,side,quantity=None,order_type="MARKET",price=None,order_amount=None):
+    live_guard(); live_daily_risk_check()
+    symbol=str(symbol).upper(); side=str(side).upper(); order_type=str(order_type).upper(); us=is_us_symbol(symbol)
+    if side not in ("BUY","SELL"): raise ValueError("invalid live order")
     if order_type not in ("MARKET","LIMIT"): raise ValueError("invalid order type")
     if order_type=="LIMIT" and (price is None or float(price)<=0): raise ValueError("limit price required")
+    if order_type=="MARKET" and price is not None: raise ValueError("market order cannot include price")
     ref=float(price) if price is not None else price_value_for_risk(symbol)
     if ref is None or ref<=0: raise ValueError("live price unavailable; order blocked")
-    notional=qty*ref
-    if notional>MAX_ORDER*0.95: raise ValueError(f"live max order is {MAX_ORDER:,.0f} KRW (5% market buffer required)")
-    if side=="BUY":
-        bp=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
-        available=_buying_power_value(bp)
-        if available is not None and notional>available: raise ValueError(f"insufficient buying power: {available:,.0f} KRW available")
+    if us and side=="BUY" and order_type=="MARKET" and order_amount is not None:
+        amount=float(order_amount)
+        if amount<=0: raise ValueError("USD order amount must be positive")
+        if amount>MAX_ORDER_USD*0.95: raise ValueError(f"live max US order is {MAX_ORDER_USD:,.2f} USD (5% buffer required)")
+        bp=toss("GET","/api/v1/buying-power",{"currency":"USD"},account=True); available=_buying_power_value(bp)
+        if available is not None and amount>available: raise ValueError(f"USD buying power is {available:,.2f}")
+        body={"clientOrderId":"ait-"+secrets.token_hex(10),"symbol":symbol,"side":"BUY","orderType":"MARKET","orderAmount":f"{amount:.2f}"}
     else:
-        sd=toss("GET","/api/v1/sellable-quantity",{"symbol":symbol},account=True)
-        available=_sellable_value(sd)
-        if available is not None and qty>int(available): raise ValueError(f"sellable quantity is {int(available)}")
-    cid="ait-"+secrets.token_hex(10)
-    body={"clientOrderId":cid,"symbol":symbol,"side":side,"orderType":order_type,"quantity":str(qty)}
-    if order_type=="LIMIT": body["price"]=str(int(float(price))) if symbol.isdigit() else str(price)
+        if quantity is None: raise ValueError("quantity required")
+        qty=float(quantity)
+        if qty<=0: raise ValueError("quantity must be positive")
+        if us and qty!=int(qty) and not (side=="SELL" and order_type=="MARKET"): raise ValueError("fractional quantity is only allowed for US market SELL")
+        notional=qty*ref; currency="USD" if us else "KRW"
+        limit=MAX_ORDER_USD if us else MAX_ORDER
+        if notional>limit*0.95: raise ValueError(f"live max {currency} order is {limit:,.2f} (5% buffer required)")
+        if side=="BUY":
+            bp=toss("GET","/api/v1/buying-power",{"currency":currency},account=True); available=_buying_power_value(bp)
+            if available is not None and notional>available: raise ValueError(f"{currency} buying power is {available:,.2f}")
+        else:
+            sd=toss("GET","/api/v1/sellable-quantity",{"symbol":symbol},account=True); available=_sellable_value(sd)
+            if available is not None and qty>available: raise ValueError(f"sellable quantity is {available}")
+        qtext=str(qty).rstrip("0").rstrip(".")
+        body={"clientOrderId":"ait-"+secrets.token_hex(10),"symbol":symbol,"side":side,"orderType":order_type,"quantity":qtext}
+        if order_type=="LIMIT": body["price"]=f"{float(price):.4f}".rstrip("0").rstrip(".") if us else str(int(float(price)))
     result=toss("POST","/api/v1/orders",body=body,account=True)
     with LOCK:
-        STATE["live_last_order_id"]=result.get("result",{}).get("orderId","")
-        STATE["last_error"]=""; save()
+        STATE["live_last_order_id"]=result.get("result",{}).get("orderId",""); STATE["last_error"]=""; save()
     return result
+
 
 def live_modify(order_id,quantity=None,price=None):
     live_guard()
@@ -334,9 +328,10 @@ def price_value_for_risk(symbol):
 def live_account_snapshot():
     live_guard()
     holdings=toss("GET","/api/v1/holdings",account=True)
-    buying=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
+    buying_krw=toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True)
+    buying_usd=toss("GET","/api/v1/buying-power",{"currency":"USD"},account=True)
     orders=toss("GET","/api/v1/orders",{"status":"OPEN"},account=True)
-    return {"holdings":holdings,"buying_power":buying,"open_orders":orders}
+    return {"holdings":holdings,"buying_power":{"KRW":buying_krw,"USD":buying_usd},"open_orders":orders}
 
 def live_auto_loop():
     while True:
@@ -344,7 +339,7 @@ def live_auto_loop():
             with LOCK:
                 active=STATE.get("live_armed",False) and STATE.get("live_auto_enabled",False) and STATE.get("trading_enabled",False)
                 sym=STATE.get("auto_symbol","005930"); iv=STATE.get("auto_interval","1m")
-                budget=float(STATE.get("auto_order_krw",50000)); last=STATE.get("live_last_auto_candle","")
+                budget=float(STATE.get("auto_order_usd",50) if is_us_symbol(sym) else STATE.get("auto_order_krw",50000)); last=STATE.get("live_last_auto_candle","")
             if active and MODE=="live" and LIVE_TRADING_ENABLED:
                 live_daily_risk_check()
                 m=market(sym,iv); cs=m["candles"]; cid=cs[-1].get("timestamp","")
@@ -353,8 +348,11 @@ def live_auto_loop():
                         raise RuntimeError("live trading halted: live market data unavailable")
                     sig=m["signal"]; p=price(sym)
                     if sig["action"]=="BUY":
-                        n=int(min(budget,MAX_ORDER)//p)
-                        if n: live_order(sym,"BUY",n,"MARKET")
+                        if is_us_symbol(sym):
+                            if budget>0: live_order(sym,"BUY",None,"MARKET",order_amount=min(budget,MAX_ORDER_USD))
+                        else:
+                            n=int(min(budget,MAX_ORDER)//p)
+                            if n: live_order(sym,"BUY",n,"MARKET")
                     elif sig["action"]=="SELL":
                         h=toss("GET","/api/v1/holdings",account=True)
                         n=0
@@ -432,7 +430,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(toss("GET",f"/api/v1/orders/{oid}",account=True))
             if path=="/api/live/buying-power":
                 if not self.guard():return
-                return self.send_json(toss("GET","/api/v1/buying-power",{"currency":"KRW"},account=True))
+                return self.send_json(toss("GET","/api/v1/buying-power",{"currency":q.get("currency",["KRW"])[0].upper()},account=True))
             if path=="/api/live/risk":
                 if not self.guard():return
                 snap=live_daily_risk_check()
@@ -482,8 +480,9 @@ class Handler(BaseHTTPRequestHandler):
             if path=="/api/live/order":
                 if not STATE.get("live_armed",False):return self.send_json({"error":"live engine is not armed"},403)
                 if b.get("confirm") is not True:return self.send_json({"error":"live order confirmation required"},400)
-                sym=str(b["symbol"]).upper(); side=str(b["side"]).upper(); qty=int(b.get("quantity",0))
-                return self.send_json(live_order(sym,side,qty,b.get("order_type","MARKET"),b.get("price")),201)
+                sym=str(b["symbol"]).upper(); side=str(b["side"]).upper(); qty=b.get("quantity")
+                amount=b.get("order_amount")
+                return self.send_json(live_order(sym,side,qty,b.get("order_type","MARKET"),b.get("price"),amount),201)
             if path.startswith("/api/live/orders/") and path.endswith("/modify"):
                 oid=path.split("/")[-2]
                 if not b.get("confirm"):return self.send_json({"error":"order modification confirmation required"},400)
