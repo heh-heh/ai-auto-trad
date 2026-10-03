@@ -171,6 +171,9 @@ async def live_order(order: LiveOrder, x_live_confirm: str | None = Header(defau
         raise HTTPException(status_code=400, detail=decision.reason)
 
     try:
+        daily_loss = await toss.daily_profit_loss_krw()
+        if daily_loss <= -abs(settings.max_daily_loss_krw):
+            raise HTTPException(status_code=400, detail="MAX_DAILY_LOSS_KRW reached")
         result = await toss.create_order(
             symbol=order.symbol,
             side=side,
